@@ -8,6 +8,8 @@ machine:
     - ceph osd pool create docker-distribution 1
   # Install codecov for coverage
     - pip install --user codecov
+  # Install HDFS
+    - sudo -i ~/distribution/contrib/hdfs/ci-setup.sh
 
   post:
   # go
