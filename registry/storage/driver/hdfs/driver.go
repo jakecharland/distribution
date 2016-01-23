@@ -3,6 +3,7 @@ package hdfs
 import (
   "fmt"
   "net/http"
+  "encoding/json"
   storagedriver "github.com/docker/distribution/registry/storage/driver"
 )
 
@@ -15,7 +16,19 @@ type DriverParameters struct {
   //TODO add user for now I will just use user docker
 }
 
-
+type FileStatusJson struct{
+  FileStatus struct{
+    AccessTime int64  `json:"accessTime"`
+    BlockSize  int32  `json:"BlockSize"`
+    Group      string `json:"group"`
+    Length     int64  `json:"length"`
+    ModificationTime  int64  `json:"modificationTime"`
+    Owner      string `json:"owner"`
+    PathSuffix string `json:"pathSuffix"`
+    Permission string  `json:"permission"`
+    FileType   string  `json:"type"`
+  }
+}
 
 func init() {
 	factory.Register(driverName, &hdfsDriverFactory{})
@@ -121,7 +134,40 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
 // Stat retrieves the FileInfo for the given path, including the current size
 // in bytes and the creation time.
 func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileInfo, error) {
+  baseURI, err := d.URLFor(ctx, sourcePath, nil)
+  if err != nil {
 
+  }
+  //TODO check if the file exists before calling delete
+  baseURI += "?op=GETFILESTATUS"
+  resp, err := http.GET(baseURI)
+  defer resp.Body.Close()
+  fileStatusJson := FileStatusJson{}
+  err := getJson(resp, &fileStatusJson)
+
+  if err != nil{
+    return nil, err
+  }
+
+  fi := storagedriver.FileInfoFields{
+		Path: path,
+	}
+  if fileStatusJson.FileStatus.FileType == "DIRECTORY" {
+    fi.IsDir = true
+  } else{
+    fi.IsDir = false
+    fi.Size = fileStatusJson.FileStatus.Length
+  }
+
+  timestamp, err := time.Parse(time.RFC3339Nano, fileStatusJson.FileStatus.ModificationTime)
+  if err != nil {
+    return nil, err
+  }
+  fi.ModTime = timestamp
+  return fileInfo{
+    path:     subPath,
+    FileInfo: fi,
+  }, nil
 }
 
 // List returns a list of the objects that are direct descendants of the given
@@ -145,6 +191,7 @@ func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) e
   baseURI += "?op=RENAME&destination=" + destPath
   req, err := http.NewRequest("PUT", baseURI, nil)
   resp, err := client.Do(req)
+  defer resp.Body.Close()
   return err
 }
 
@@ -162,6 +209,7 @@ func (d *driver) Delete(ctx context.Context, subPath string) error {
   baseURI += "?op=DELETE&recursive=true"
   req, err := http.NewRequest("DELETE", baseURI, nil)
   resp, err := client.Do(req)
+  defer resp.Body.Close()
   return err
 }
 
@@ -180,4 +228,8 @@ func (d *driver) URLFor(ctx context.Context, path string, options map[string]int
   //TODO find out what path looks like most importantly does it have a leading or trailing '/'
   return "http://" + DriverParameters.HdfsUrl + ":" + DriverParameters.Port + "/webhdfs/v1/" + path, nil
 
+}
+
+func getJson(r http.Response, target interface{}) error {
+    return json.NewDecoder(r.Body).Decode(target)
 }
