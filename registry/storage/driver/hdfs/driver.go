@@ -4,10 +4,24 @@ import (
   "fmt"
   "net/http"
   "encoding/json"
+  "sync"
+  "io"
+  "time"
+  "strconv"
+
+  "github.com/docker/distribution/context"
   storagedriver "github.com/docker/distribution/registry/storage/driver"
+  "github.com/docker/distribution/registry/storage/driver/base"
+	"github.com/docker/distribution/registry/storage/driver/factory"
 )
 
 const driverName = "hdfs"
+const defaultRootDirectory = "/"
+const minChunkSize = 5 << 20
+const defaultHdfsUrl = "10.0.1.18"
+const defaultPort = "50070"
+
+const defaultChunkSize = 2 * minChunkSize
 
 type DriverParameters struct {
 	HdfsUrl       string
@@ -18,11 +32,11 @@ type DriverParameters struct {
 
 type FileStatusJson struct{
   FileStatus struct{
-    AccessTime int64  `json:"accessTime"`
-    BlockSize  int32  `json:"BlockSize"`
+    AccessTime int  `json:"accessTime"`
+    BlockSize  int  `json:"BlockSize"`
     Group      string `json:"group"`
     Length     int64  `json:"length"`
-    ModificationTime  int64  `json:"modificationTime"`
+    ModificationTime  int  `json:"modificationTime"`
     Owner      string `json:"owner"`
     PathSuffix string `json:"pathSuffix"`
     Permission string  `json:"permission"`
@@ -42,11 +56,12 @@ func (factory *hdfsDriverFactory) Create(parameters map[string]interface{}) (sto
 
 type driver struct {
 	HdfsUrl       string
-	Port          int32
+	Port          string
 	RootDirectory string
 
   pool  sync.Pool // pool []byte buffers used for WriteStream
   zeros []byte    // shared, zero-valued buffer used for WriteStream
+  Client http.Client //http client for sending http requests to the hdfs
 }
 
 type baseEmbed struct {
@@ -61,19 +76,20 @@ type Driver struct {
 
 func FromParameters(parameters map[string]interface{}) *Driver {
 	var rootDirectory = defaultRootDirectory
+  hdfsUrl := defaultHdfsUrl
+  portInt := defaultPort
 	if parameters != nil {
 		rootDir, ok := parameters["rootdirectory"]
 		if ok {
 			rootDirectory = fmt.Sprint(rootDir)
 		}
-    hdfsUrl, ok := parameters["hdfsurl"]
+    hdfsUrlTemp, ok := parameters["hdfsurl"]
     if ok{
-      hdfsUrl = fmt.Sprintf(hdfsUrl)
+      hdfsUrl = fmt.Sprint(hdfsUrlTemp)
     }
-    portInt := 50070
-    port, ok := parameters["port"]
+    portIntTemp, ok := parameters["port"]
     if ok{
-      portInt = port.(int32)
+      portInt = fmt.Sprint(portIntTemp)
     }
 	}
 
@@ -90,10 +106,19 @@ func FromParameters(parameters map[string]interface{}) *Driver {
 func New(params DriverParameters) *Driver {
 
   //TODO create the root directory inside of the hdfs if it doesnt already exist.
+  client := &http.Client{
+	   CheckRedirect: redirectPolicyFunc,
+  }
   d := &driver{
 		HdfsUrl:        params.HdfsUrl,
 		Port:           params.Port,
 		RootDirectory:  params.RootDirectory,
+    Client:         *client,
+    zeros:         make([]byte, defaultChunkSize),
+	}
+
+  d.pool.New = func() interface{} {
+		return make([]byte, defaultChunkSize)
 	}
 
   return &Driver{
@@ -102,7 +127,7 @@ func New(params DriverParameters) *Driver {
 				StorageDriver: d,
 			},
 		},
-	}, nil
+	}
 }
 
 func (d *driver) Name() string {
@@ -111,46 +136,47 @@ func (d *driver) Name() string {
 
 // GetContent retrieves the content stored at "path" as a []byte.
 func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
+  return nil, nil
 
 }
 
 // PutContent stores the []byte content at a location designated by "path".
 func (d *driver) PutContent(ctx context.Context, path string, contents []byte) error {
-
+  return nil
 }
 
 // ReadStream retrieves an io.ReadCloser for the content stored at "path" with a
 // given byte offset.
 func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.ReadCloser, error) {
-
+  return nil, nil
 }
 
 // WriteStream stores the contents of the provided io.Reader at a location
 // designated by the given path.
 func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, reader io.Reader) (nn int64, err error) {
-
+  return 0, nil
 }
 
 // Stat retrieves the FileInfo for the given path, including the current size
 // in bytes and the creation time.
 func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileInfo, error) {
-  baseURI, err := d.URLFor(ctx, sourcePath, nil)
+  baseURI, err := d.URLFor(ctx, subPath, nil)
   if err != nil {
 
   }
   //TODO check if the file exists before calling delete
   baseURI += "?op=GETFILESTATUS"
-  resp, err := http.GET(baseURI)
+  resp, err := http.Get(baseURI)
   defer resp.Body.Close()
   fileStatusJson := FileStatusJson{}
-  err := getJson(resp, &fileStatusJson)
+  err = getJson(resp, &fileStatusJson)
 
   if err != nil{
     return nil, err
   }
 
   fi := storagedriver.FileInfoFields{
-		Path: path,
+		Path: subPath,
 	}
   if fileStatusJson.FileStatus.FileType == "DIRECTORY" {
     fi.IsDir = true
@@ -159,21 +185,19 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
     fi.Size = fileStatusJson.FileStatus.Length
   }
 
-  timestamp, err := time.Parse(time.RFC3339Nano, fileStatusJson.FileStatus.ModificationTime)
+
+  timestamp, err := msToTime(strconv.Itoa(fileStatusJson.FileStatus.ModificationTime))
   if err != nil {
     return nil, err
   }
   fi.ModTime = timestamp
-  return fileInfo{
-    path:     subPath,
-    FileInfo: fi,
-  }, nil
+  return storagedriver.FileInfoInternal{FileInfoFields: fi}, nil
 }
 
 // List returns a list of the objects that are direct descendants of the given
 // path.
 func (d *driver) List(ctx context.Context, subPath string) ([]string, error) {
-
+  return nil, nil
 }
 
 // Move moves an object stored at sourcePath to destPath, removing the original
@@ -184,13 +208,10 @@ func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) e
   if err != nil {
 
   }
-  client := &http.Client{
-	   CheckRedirect: redirectPolicyFunc,
-  }
   //TODO check if the file exists before calling delete
   baseURI += "?op=RENAME&destination=" + destPath
   req, err := http.NewRequest("PUT", baseURI, nil)
-  resp, err := client.Do(req)
+  resp, err := d.Client.Do(req)
   defer resp.Body.Close()
   return err
 }
@@ -202,13 +223,10 @@ func (d *driver) Delete(ctx context.Context, subPath string) error {
   if err != nil {
 
   }
-  client := &http.Client{
-	   CheckRedirect: redirectPolicyFunc,
-  }
   //TODO check if the file exists before calling delete
   baseURI += "?op=DELETE&recursive=true"
   req, err := http.NewRequest("DELETE", baseURI, nil)
-  resp, err := client.Do(req)
+  resp, err := d.Client.Do(req)
   defer resp.Body.Close()
   return err
 }
@@ -226,10 +244,33 @@ func (d *driver) URLFor(ctx context.Context, path string, options map[string]int
   }
 
   //TODO find out what path looks like most importantly does it have a leading or trailing '/'
-  return "http://" + DriverParameters.HdfsUrl + ":" + DriverParameters.Port + "/webhdfs/v1/" + path, nil
+  return "http://" + d.HdfsUrl + ":" + d.Port + "/webhdfs/v1" + path, nil
 
 }
+// CheckRedirect specifies the policy for handling redirects.
+// If CheckRedirect is not nil, the client calls it before
+// following an HTTP redirect. The arguments req and via are
+// the upcoming request and the requests made already, oldest
+// first. If CheckRedirect returns an error, the Client's Get
+// method returns both the previous Response and
+// CheckRedirect's error (wrapped in a url.Error) instead of
+// issuing the Request req.
+//
+// If CheckRedirect is nil, the Client uses its default policy,
+// which is to stop after 10 consecutive requests.
+func redirectPolicyFunc(req *http.Request, via []*http.Request) error {
+  return nil
+}
 
-func getJson(r http.Response, target interface{}) error {
+func getJson(r *http.Response, target interface{}) error {
     return json.NewDecoder(r.Body).Decode(target)
+}
+
+func msToTime(ms string) (time.Time, error) {
+    msInt, err := strconv.ParseInt(ms, 10, 64)
+    if err != nil {
+        return time.Time{}, err
+    }
+
+    return time.Unix(0, msInt*int64(time.Millisecond)), nil
 }
