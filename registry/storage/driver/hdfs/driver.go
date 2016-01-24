@@ -9,6 +9,8 @@ import (
   "time"
   "strconv"
   "io/ioutil"
+  "errors"
+  "bytes"
 
 
   "github.com/docker/distribution/context"
@@ -153,6 +155,38 @@ func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
 
 // PutContent stores the []byte content at a location designated by "path".
 func (d *driver) PutContent(ctx context.Context, path string, contents []byte) error {
+  requestOptions := map[string]string{
+    "method": "CREATE",
+    //TODO add buffersize for now using default buffersize.
+  }
+  requestURI, err := getHdfsURI(path, requestOptions, d)
+  if err != nil {
+    return err
+  }
+  fmt.Println(requestURI)
+  req, err := http.NewRequest("PUT", requestURI, nil)
+  if err != nil {
+    return err
+  }
+  resp, err := d.Client.Do(req)
+  defer resp.Body.Close()
+  if err != nil {
+    return err
+  }
+  fmt.Println(resp.Status)
+  fmt.Println(resp.Header["Location"])
+  requestURI = resp.Header["Location"][0]
+  //TODO deal with file permissions.
+  req, err = http.NewRequest("PUT", requestURI + "&user.name=jakecharland", bytes.NewBuffer(contents))
+  if err != nil{
+    return err
+  }
+  resp1, err := d.Client.Do(req)
+  if err != nil{
+    return err
+  }
+  fmt.Println(resp1)
+  defer resp1.Body.Close()
   return nil
 }
 
@@ -176,8 +210,13 @@ func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.
   return resp.Body, nil
 }
 
-// WriteStream stores the contents of the provided io.Reader at a location
-// designated by the given path.
+// WriteStream stores the contents of the provided io.Reader at a
+// location designated by the given path. The driver will know it has
+// received the full contents when the reader returns io.EOF. The number
+// of successfully READ bytes will be returned, even if an error is
+// returned. May be used to resume writing a stream by providing a nonzero
+// offset. Offsets past the current size will write from the position
+// beyond the end of the file.
 func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, reader io.Reader) (nn int64, err error) {
   return 0, nil
 }
@@ -293,6 +332,8 @@ func getHdfsURI(path string, options map[string]string, d *driver)(string, error
         } else {
           return "", nil
         }
+      case "CREATE":
+        fullURI = baseURI + "?op=CREATE"
       default:
         return "", storagedriver.ErrUnsupportedMethod{}
     }
@@ -312,7 +353,8 @@ func getHdfsURI(path string, options map[string]string, d *driver)(string, error
 // If CheckRedirect is nil, the Client uses its default policy,
 // which is to stop after 10 consecutive requests.
 func redirectPolicyFunc(req *http.Request, via []*http.Request) error {
-  return nil
+  fmt.Println("canceling redirect")
+  return errors.New("cancel")
 }
 
 func getJson(r *http.Response, target interface{}) error {

@@ -83,8 +83,36 @@ func TestGetFile(t *testing.T){
 	ctx := context.Background()
   file, err := rootedDriver.GetContent(ctx, filename)
   if err != nil{
-    fmt.Println("Ya broke it")
-    fmt.Println(err)
+    t.FailNow()
   }
-  fmt.Println(file)
+  if file == nil {
+    t.FailNow()
+  }
+}
+
+func TestPutFile(t *testing.T){
+  validRoot, err := ioutil.TempDir("", "driver-")
+	if err != nil {
+    fmt.Println(err)
+    return
+	}
+	defer os.Remove(validRoot)
+
+  rootedDriver, err := hdfsDriverConstructor(validRoot)
+	if err != nil {
+    fmt.Println(err)
+    return
+	}
+
+	path := "/docker/hdfsFile1.txt"
+	ctx := context.Background()
+  filename := "/Users/jakecharland/greetings.txt"
+  fileBytes, err := ioutil.ReadFile(filename)
+  if err != nil {
+    t.FailNow()
+  }
+  err = rootedDriver.PutContent(ctx, path, fileBytes)
+  if err != nil{
+    t.FailNow()
+  }
 }
