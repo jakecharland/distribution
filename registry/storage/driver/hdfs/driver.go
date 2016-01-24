@@ -22,18 +22,22 @@ import (
 const driverName = "hdfs"
 const defaultRootDirectory = "/"
 const minChunkSize = 5 << 20
-const defaultHdfsUrl = "10.0.1.18"
+const defaultHdfsURL = "10.0.1.18"
 const defaultPort = "50070"
 const defaultChunkSize = 2 * minChunkSize
 
+//DriverParameters contains the url and port for the namenode of your
+//HDFS cluster the RootDirectory is where all data will be relative to.
 type DriverParameters struct {
-	HdfsUrl       string
+	HdfsURL       string
 	Port          string
   RootDirectory string
   //TODO add user for now I will just use user docker
 }
 
-type FileStatusJson struct{
+//FileStatusJSON contains the structure of the response from HDFS status of a
+//file or directory
+type FileStatusJSON struct{
   FileStatus struct{
     AccessTime int  `json:"accessTime"`
     BlockSize  int  `json:"BlockSize"`
@@ -58,7 +62,7 @@ func (factory *hdfsDriverFactory) Create(parameters map[string]interface{}) (sto
 }
 
 type driver struct {
-	HdfsUrl       string
+	HdfsURL       string
 	Port          string
 	RootDirectory string
 
@@ -77,18 +81,20 @@ type Driver struct {
 	baseEmbed
 }
 
+//FromParameters parses the paremeters passed in from the config file on
+//registry startup.
 func FromParameters(parameters map[string]interface{}) *Driver {
 	var rootDirectory = defaultRootDirectory
-  hdfsUrl := defaultHdfsUrl
+  HdfsURL := defaultHdfsURL
   portInt := defaultPort
 	if parameters != nil {
 		rootDir, ok := parameters["rootdirectory"]
 		if ok {
 			rootDirectory = fmt.Sprint(rootDir)
 		}
-    hdfsUrlTemp, ok := parameters["hdfsurl"]
+    HdfsURLTemp, ok := parameters["hdfsurl"]
     if ok{
-      hdfsUrl = fmt.Sprint(hdfsUrlTemp)
+      HdfsURL = fmt.Sprint(HdfsURLTemp)
     }
     portIntTemp, ok := parameters["port"]
     if ok{
@@ -97,7 +103,7 @@ func FromParameters(parameters map[string]interface{}) *Driver {
 	}
 
   params := DriverParameters{
-		hdfsUrl,
+		HdfsURL,
 		portInt,
 	  rootDirectory,
 	}
@@ -113,7 +119,7 @@ func New(params DriverParameters) *Driver {
 	   CheckRedirect: redirectPolicyFunc,
   }
   d := &driver{
-		HdfsUrl:        params.HdfsUrl,
+		HdfsURL:        params.HdfsURL,
 		Port:           params.Port,
 		RootDirectory:  params.RootDirectory,
     Client:         *client,
@@ -163,7 +169,6 @@ func (d *driver) PutContent(ctx context.Context, path string, contents []byte) e
   if err != nil {
     return err
   }
-  fmt.Println(requestURI)
   req, err := http.NewRequest("PUT", requestURI, nil)
   if err != nil {
     return err
@@ -173,8 +178,6 @@ func (d *driver) PutContent(ctx context.Context, path string, contents []byte) e
   if err != nil {
     return err
   }
-  fmt.Println(resp.Status)
-  fmt.Println(resp.Header["Location"])
   requestURI = resp.Header["Location"][0]
   //TODO deal with file permissions.
   req, err = http.NewRequest("PUT", requestURI + "&user.name=jakecharland", bytes.NewBuffer(contents))
@@ -185,7 +188,6 @@ func (d *driver) PutContent(ctx context.Context, path string, contents []byte) e
   if err != nil{
     return err
   }
-  fmt.Println(resp1)
   defer resp1.Body.Close()
   return nil
 }
@@ -234,8 +236,8 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
   //TODO check if the file exists before calling getfileStatus
   resp, err := http.Get(requestURI)
   defer resp.Body.Close()
-  fileStatusJson := FileStatusJson{}
-  err = getJson(resp, &fileStatusJson)
+  FileStatusJSON := FileStatusJSON{}
+  err = getJSON(resp, &FileStatusJSON)
 
   if err != nil{
     return nil, err
@@ -244,14 +246,14 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
   fi := storagedriver.FileInfoFields{
 		Path: subPath,
 	}
-  if fileStatusJson.FileStatus.FileType == "DIRECTORY" {
+  if FileStatusJSON.FileStatus.FileType == "DIRECTORY" {
     fi.IsDir = true
   } else{
     fi.IsDir = false
-    fi.Size = fileStatusJson.FileStatus.Length
+    fi.Size = FileStatusJSON.FileStatus.Length
   }
 
-  timestamp, err := msToTime(strconv.Itoa(fileStatusJson.FileStatus.ModificationTime))
+  timestamp, err := msToTime(strconv.Itoa(FileStatusJSON.FileStatus.ModificationTime))
   if err != nil {
     return nil, err
   }
@@ -275,13 +277,20 @@ func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) e
   }
   requestURI, err := getHdfsURI(sourcePath, requestOptions, d)
   if err != nil {
-
+    return err
   }
   //TODO check if the file exists before calling move
-  req, err := http.NewRequest("PUT", requestURI, nil)
+  //TODO file permissions
+  req, err := http.NewRequest("PUT", requestURI + "&user.name=jakecharland", nil)
+  if err != nil {
+    return err
+  }
   resp, err := d.Client.Do(req)
+  if err != nil {
+    return err
+  }
   defer resp.Body.Close()
-  return err
+  return nil
 }
 
 // Delete recursively deletes all objects stored at "path" and its subpaths.
@@ -294,7 +303,7 @@ func (d *driver) Delete(ctx context.Context, subPath string) error {
   if err != nil {
 
   }
-  req, err := http.NewRequest("DELETE", requestURI, nil)
+  req, err := http.NewRequest("DELETE", requestURI + "&user.name=jakecharland", nil)
   resp, err := d.Client.Do(req)
   defer resp.Body.Close()
   return err
@@ -304,12 +313,12 @@ func (d *driver) Delete(ctx context.Context, subPath string) error {
 // May return an UnsupportedMethodErr in certain StorageDriver implementations.
 func (d *driver) URLFor(ctx context.Context, path string, options map[string]interface{}) (string, error) {
   //TODO find out what path looks like most importantly does it have a leading or trailing '/'
-  return "", nil
+  return "", storagedriver.ErrUnsupportedMethod{}
 
 }
 
 func getHdfsURI(path string, options map[string]string, d *driver)(string, error){
-  baseURI := "http://" + d.HdfsUrl + ":" + d.Port + "/webhdfs/v1" + path
+  baseURI := "http://" + d.HdfsURL + ":" + d.Port + "/webhdfs/v1" + path
   fullURI := baseURI
   method, ok := options["method"]
   if ok {
@@ -357,7 +366,7 @@ func redirectPolicyFunc(req *http.Request, via []*http.Request) error {
   return errors.New("cancel")
 }
 
-func getJson(r *http.Response, target interface{}) error {
+func getJSON(r *http.Response, target interface{}) error {
     return json.NewDecoder(r.Body).Decode(target)
 }
 

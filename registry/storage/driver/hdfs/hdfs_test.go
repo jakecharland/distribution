@@ -18,7 +18,7 @@ func Test(t *testing.T) {
 var hdfsDriverConstructor func(rootDirectory string) (storagedriver.StorageDriver, error)
 
 func init() {
-  hdfsUrl := "10.0.1.18"
+  hdfsURL := "10.0.1.18"
   port := "50070"
   root, err := ioutil.TempDir("", "driver-")
   if err != nil {
@@ -27,7 +27,7 @@ func init() {
 	defer os.Remove(root)
   hdfsDriverConstructor = func(rootDirectory string) (storagedriver.StorageDriver, error) {
     parameters := DriverParameters{
-      hdfsUrl,
+      hdfsURL,
       port,
       rootDirectory,
     }
@@ -54,7 +54,7 @@ func TestHdfsFileStat(t *testing.T) {
     return
 	}
 
-	filename := "/jakeTest"
+	filename := "/docker"
 	ctx := context.Background()
 	fi, err := rootedDriver.Stat(ctx, filename)
 	if err != nil {
@@ -113,6 +113,49 @@ func TestPutFile(t *testing.T){
   }
   err = rootedDriver.PutContent(ctx, path, fileBytes)
   if err != nil{
+    t.FailNow()
+  }
+}
+
+func TestMoveFile(t *testing.T){
+  validRoot, err := ioutil.TempDir("", "driver-")
+	if err != nil {
+    fmt.Println(err)
+    return
+	}
+	defer os.Remove(validRoot)
+
+  rootedDriver, err := hdfsDriverConstructor(validRoot)
+	if err != nil {
+    fmt.Println(err)
+    return
+	}
+  path := "/docker/hdfsFile1.txt"
+  destPath := "/docker/hdfsFile2.txt"
+  ctx := context.Background()
+  err = rootedDriver.Move(ctx, path, destPath)
+  if err != nil {
+    t.FailNow()
+  }
+}
+
+func TestDeleteFile(t *testing.T){
+  validRoot, err := ioutil.TempDir("", "driver-")
+	if err != nil {
+    fmt.Println(err)
+    return
+	}
+	defer os.Remove(validRoot)
+
+  rootedDriver, err := hdfsDriverConstructor(validRoot)
+	if err != nil {
+    fmt.Println(err)
+    return
+	}
+  delPath := "/docker/hdfsFile2.txt"
+  ctx := context.Background()
+  err = rootedDriver.Delete(ctx, delPath)
+  if err != nil {
     t.FailNow()
   }
 }
