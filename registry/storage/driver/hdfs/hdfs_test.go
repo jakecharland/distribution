@@ -45,7 +45,7 @@ func init() {
   /*testsuites.RegisterSuite(func() (storagedriver.StorageDriver, error) {
 		return hdfsDriverConstructor(root)
 	}, skipHdfs)*/
-  TestHdfsFileStat(test)
+  //TestHdfsFileStat(test)
 }
 
 func TestHdfsFileStat(t *testing.T) {
