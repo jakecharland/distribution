@@ -20,7 +20,6 @@ const defaultRootDirectory = "/"
 const minChunkSize = 5 << 20
 const defaultHdfsUrl = "10.0.1.18"
 const defaultPort = "50070"
-
 const defaultChunkSize = 2 * minChunkSize
 
 type DriverParameters struct {
@@ -160,13 +159,15 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
 // Stat retrieves the FileInfo for the given path, including the current size
 // in bytes and the creation time.
 func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileInfo, error) {
-  baseURI, err := d.URLFor(ctx, subPath, nil)
+  requestOptions := map[string]string{
+    "method": "GETFILESTATUS",
+  }
+  requestURI, err := getHdfsURI(subPath, requestOptions, d)
   if err != nil {
 
   }
-  //TODO check if the file exists before calling delete
-  baseURI += "?op=GETFILESTATUS"
-  resp, err := http.Get(baseURI)
+  //TODO check if the file exists before calling getfileStatus
+  resp, err := http.Get(requestURI)
   defer resp.Body.Close()
   fileStatusJson := FileStatusJson{}
   err = getJson(resp, &fileStatusJson)
@@ -184,7 +185,6 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
     fi.IsDir = false
     fi.Size = fileStatusJson.FileStatus.Length
   }
-
 
   timestamp, err := msToTime(strconv.Itoa(fileStatusJson.FileStatus.ModificationTime))
   if err != nil {
@@ -204,13 +204,16 @@ func (d *driver) List(ctx context.Context, subPath string) ([]string, error) {
 // object.
 func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) error {
   //curl -i -X PUT "http://10.0.1.18:50070/webhdfs/v1/jake?op=RENAME&destination=<PATH>"
-  baseURI, err := d.URLFor(ctx, sourcePath, nil)
+  requestOptions := map[string]string{
+    "method": "RENAME",
+    "destPath": destPath,
+  }
+  requestURI, err := getHdfsURI(sourcePath, requestOptions, d)
   if err != nil {
 
   }
-  //TODO check if the file exists before calling delete
-  baseURI += "?op=RENAME&destination=" + destPath
-  req, err := http.NewRequest("PUT", baseURI, nil)
+  //TODO check if the file exists before calling move
+  req, err := http.NewRequest("PUT", requestURI, nil)
   resp, err := d.Client.Do(req)
   defer resp.Body.Close()
   return err
@@ -218,14 +221,15 @@ func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) e
 
 // Delete recursively deletes all objects stored at "path" and its subpaths.
 func (d *driver) Delete(ctx context.Context, subPath string) error {
-  //curl -i -X DELETE "http://10.0.1.18:50070/webhdfs/v1/jake?op=DELETE&recursive=true"
-  baseURI, err := d.URLFor(ctx, subPath, nil)
+  //curl -i -X DELETE "http://10.0.1.18:50070/webhdfs/v1/jake?op=DELETE&recursive=true
+  requestOptions := map[string]string{
+    "method": "DELETE",
+  }
+  requestURI, err := getHdfsURI(subPath, requestOptions, d)
   if err != nil {
 
   }
-  //TODO check if the file exists before calling delete
-  baseURI += "?op=DELETE&recursive=true"
-  req, err := http.NewRequest("DELETE", baseURI, nil)
+  req, err := http.NewRequest("DELETE", requestURI, nil)
   resp, err := d.Client.Do(req)
   defer resp.Body.Close()
   return err
@@ -234,19 +238,35 @@ func (d *driver) Delete(ctx context.Context, subPath string) error {
 // URLFor returns a URL which may be used to retrieve the content stored at the given path.
 // May return an UnsupportedMethodErr in certain StorageDriver implementations.
 func (d *driver) URLFor(ctx context.Context, path string, options map[string]interface{}) (string, error) {
-  methodString := "GET"
-  method, ok := options["method"]
-  if ok {
-    methodString, ok = method.(string)
-    if !ok || (methodString != "GET" && methodString != "PUT") {
-      return "", storagedriver.ErrUnsupportedMethod{}
-    }
-  }
-
   //TODO find out what path looks like most importantly does it have a leading or trailing '/'
-  return "http://" + d.HdfsUrl + ":" + d.Port + "/webhdfs/v1" + path, nil
+  return "", nil
 
 }
+
+func getHdfsURI(path string, options map[string]string, d *driver)(string, error){
+  baseURI := "http://" + d.HdfsUrl + ":" + d.Port + "/webhdfs/v1" + path
+  fullURI := baseURI
+  method, ok := options["method"]
+  if ok {
+    switch method {
+    case "GETFILESTATUS":
+        fullURI = baseURI + "?op=GETFILESTATUS"
+      case "DELETE":
+        fullURI = baseURI + "?op=DELETE&recursive=true"
+      case "RENAME":
+        destPath, ok := options["destPath"]
+        if ok {
+          fullURI = baseURI + "?op=RENAME&destination=" + fmt.Sprint(destPath)
+        } else {
+          return "", nil
+        }
+      default:
+        return "", storagedriver.ErrUnsupportedMethod{}
+    }
+  }
+  return fullURI, nil
+}
+
 // CheckRedirect specifies the policy for handling redirects.
 // If CheckRedirect is not nil, the client calls it before
 // following an HTTP redirect. The arguments req and via are
