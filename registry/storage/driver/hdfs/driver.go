@@ -8,6 +8,8 @@ import (
   "io"
   "time"
   "strconv"
+  "io/ioutil"
+
 
   "github.com/docker/distribution/context"
   storagedriver "github.com/docker/distribution/registry/storage/driver"
@@ -135,8 +137,18 @@ func (d *driver) Name() string {
 
 // GetContent retrieves the content stored at "path" as a []byte.
 func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
-  return nil, nil
+  rc, err := d.ReadStream(ctx, path, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
 
+	p, err := ioutil.ReadAll(rc)
+	if err != nil {
+		return nil, err
+	}
+
+	return p, nil
 }
 
 // PutContent stores the []byte content at a location designated by "path".
@@ -147,7 +159,21 @@ func (d *driver) PutContent(ctx context.Context, path string, contents []byte) e
 // ReadStream retrieves an io.ReadCloser for the content stored at "path" with a
 // given byte offset.
 func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.ReadCloser, error) {
-  return nil, nil
+  //TODO check if file exists before reading from hdfs.
+  requestOptions := map[string]string{
+    "method": "OPEN",
+    "offset": strconv.FormatInt(offset, 10),
+    //TODO add buffersize for now using default buffersize.
+  }
+  requestURI, err := getHdfsURI(path, requestOptions, d)
+  if err != nil {
+    return nil, err
+  }
+  resp, err := http.Get(requestURI)
+  if err != nil {
+    return nil, err
+  }
+  return resp.Body, nil
 }
 
 // WriteStream stores the contents of the provided io.Reader at a location
@@ -257,6 +283,13 @@ func getHdfsURI(path string, options map[string]string, d *driver)(string, error
         destPath, ok := options["destPath"]
         if ok {
           fullURI = baseURI + "?op=RENAME&destination=" + fmt.Sprint(destPath)
+        } else {
+          return "", nil
+        }
+      case "OPEN":
+        offset, ok := options["offset"]
+        if ok{
+          fullURI = baseURI + "?op=OPEN&offset=" + offset
         } else {
           return "", nil
         }

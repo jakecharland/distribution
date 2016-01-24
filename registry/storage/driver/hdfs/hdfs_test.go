@@ -15,7 +15,7 @@ func Test(t *testing.T) {
   check.TestingT(t)
 }
 
-  var hdfsDriverConstructor func(rootDirectory string) (storagedriver.StorageDriver, error)
+var hdfsDriverConstructor func(rootDirectory string) (storagedriver.StorageDriver, error)
 
 func init() {
   hdfsUrl := "10.0.1.18"
@@ -63,4 +63,28 @@ func TestHdfsFileStat(t *testing.T) {
   if !fi.IsDir() {
     t.FailNow()
   }
+}
+
+func TestGetFile(t *testing.T){
+  validRoot, err := ioutil.TempDir("", "driver-")
+	if err != nil {
+    fmt.Println(err)
+    return
+	}
+	defer os.Remove(validRoot)
+
+  rootedDriver, err := hdfsDriverConstructor(validRoot)
+	if err != nil {
+    fmt.Println(err)
+    return
+	}
+
+	filename := "/docker/hdfsFile.txt"
+	ctx := context.Background()
+  file, err := rootedDriver.GetContent(ctx, filename)
+  if err != nil{
+    fmt.Println("Ya broke it")
+    fmt.Println(err)
+  }
+  fmt.Println(file)
 }
