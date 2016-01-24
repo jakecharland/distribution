@@ -14,8 +14,6 @@ import (
 var test *testing.T
 // Hook up gocheck into the "go test" runner.
 func Test(t *testing.T) {
-  test = t
-  fmt.Println("=============")
   check.TestingT(t)
 }
 
