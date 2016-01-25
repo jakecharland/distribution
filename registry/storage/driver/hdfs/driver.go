@@ -170,7 +170,6 @@ func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close()
 
 	p, err := ioutil.ReadAll(rc)
 	if err != nil {
@@ -235,7 +234,8 @@ func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.
     return nil, err
   }
   defer resp.Body.Close()
-  return resp.Body, nil
+  respBody := resp.Body
+  return respBody, nil
 }
 
 // WriteStream stores the contents of the provided io.Reader at a
