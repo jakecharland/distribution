@@ -140,6 +140,7 @@ func TestMoveFile(t *testing.T){
 }
 
 func TestDeleteFile(t *testing.T){
+  t.Skip("skip delete")
   validRoot, err := ioutil.TempDir("", "driver-")
 	if err != nil {
     fmt.Println(err)
@@ -158,4 +159,27 @@ func TestDeleteFile(t *testing.T){
   if err != nil {
     t.FailNow()
   }
+}
+
+func TestListDir(t *testing.T){
+  validRoot, err := ioutil.TempDir("", "driver-")
+	if err != nil {
+    fmt.Println(err)
+    return
+	}
+	defer os.Remove(validRoot)
+
+  rootedDriver, err := hdfsDriverConstructor(validRoot)
+	if err != nil {
+    fmt.Println(err)
+    return
+	}
+  path := "/docker"
+  ctx := context.Background()
+  dir, err := rootedDriver.List(ctx, path)
+  if err != nil {
+    fmt.Println(err)
+    t.FailNow()
+  }
+  fmt.Println(dir)
 }

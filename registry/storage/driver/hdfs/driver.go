@@ -37,6 +37,24 @@ type DriverParameters struct {
 
 //FileStatusJSON contains the structure of the response from HDFS status of a
 //file or directory
+type FileStatusesJSON struct{
+  FileStatuses struct{
+    FileStatus []struct{
+      AccessTime int  `json:"accessTime"`
+      BlockSize  int  `json:"BlockSize"`
+      Group      string `json:"group"`
+      Length     int64  `json:"length"`
+      ModificationTime  int  `json:"modificationTime"`
+      Owner      string `json:"owner"`
+      PathSuffix string `json:"pathSuffix"`
+      Permission string  `json:"permission"`
+      FileType   string  `json:"type"`
+    }
+  }
+}
+
+//FileStatusJSON contains the structure of the response from HDFS status of a
+//file or directory
 type FileStatusJSON struct{
   FileStatus struct{
     AccessTime int  `json:"accessTime"`
@@ -235,6 +253,9 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
   }
   //TODO check if the file exists before calling getfileStatus
   resp, err := http.Get(requestURI)
+  if err != nil{
+    return nil, err
+  }
   defer resp.Body.Close()
   FileStatusJSON := FileStatusJSON{}
   err = getJSON(resp, &FileStatusJSON)
@@ -264,7 +285,30 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
 // List returns a list of the objects that are direct descendants of the given
 // path.
 func (d *driver) List(ctx context.Context, subPath string) ([]string, error) {
-  return nil, nil
+  requestOptions := map[string]string{
+    "method": "LISTSTATUS",
+  }
+  requestURI, err := getHdfsURI(subPath, requestOptions, d)
+  if err != nil {
+    return nil, err
+  }
+  resp, err := http.Get(requestURI)
+  defer resp.Body.Close()
+
+  FileStatusesJSON := FileStatusesJSON{}
+  err = getJSON(resp, &FileStatusesJSON)
+
+  if err != nil{
+    return nil, err
+  }
+
+  files := []string{}
+  for _, element := range FileStatusesJSON.FileStatuses.FileStatus {
+  // element is the element from someSlice for where we are
+  files = append(files, subPath + "/" + element.PathSuffix)
+  }
+
+  return files, nil
 }
 
 // Move moves an object stored at sourcePath to destPath, removing the original
@@ -343,6 +387,8 @@ func getHdfsURI(path string, options map[string]string, d *driver)(string, error
         }
       case "CREATE":
         fullURI = baseURI + "?op=CREATE"
+      case "LISTSTATUS":
+        fullURI = baseURI + "?op=LISTSTATUS"
       default:
         return "", storagedriver.ErrUnsupportedMethod{}
     }
