@@ -12,7 +12,6 @@ import (
   "errors"
   "bytes"
 
-
   "github.com/docker/distribution/context"
   storagedriver "github.com/docker/distribution/registry/storage/driver"
   "github.com/docker/distribution/registry/storage/driver/base"
@@ -24,9 +23,9 @@ const defaultRootDirectory = "/"
 const defaultHdfsURL = "10.0.1.18"
 const defaultPort = "50070"
 
-//Set defaultChunkSize to 125mb which is the default chunk size for hdfs
+//Set defaultChunkSize to 5mb which is the default chunk size for hdfs
 //const defaultChunkSize = 1.25e+8
-const defaultChunkSize = 5e+6
+const defaultChunkSize = 10 * 1024 * 1024
 var skipS3 func() string
 
 //DriverParameters contains the url and port for the namenode of your
@@ -233,7 +232,6 @@ func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.
   if err != nil {
     return nil, err
   }
-  defer resp.Body.Close()
   return resp.Body, nil
 }
 
@@ -247,82 +245,56 @@ func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.
 func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, reader io.Reader) (nn int64, err error) {
   totalRead := int64(0)
   offset = 0
-  //fmt.Println("Run write stream")
-  done := make(chan struct{}) // stopgap to free up waiting goroutines
-
-  buf := d.getbuf()
-
-  defer func() {
-		d.putbuf(buf) // needs to be here to pick up new buf value
-		close(done)   // free up any waiting goroutines
-	}()
-  /*
-   *TODO Check total object size for exisiting file and write from offset
-   *for now implementing niave solution of just writing the whole file again.
-   */
-   sizeToRead := uint64(defaultChunkSize)
-   sizeRead := uint64(0)
-   EOF := false
-   for sizeRead < sizeToRead {
-     //fmt.Println("looping on buf")
-     bytesRead, err := reader.Read(buf[sizeRead:sizeToRead])
-     //totalRead += uint64(bytesRead)
-     fmt.Println(bytesRead)
-     if err != nil {
-       if err != io.EOF {
-         return totalRead, err
-       }
-       EOF = true
-       break
-     }
-   }
-   //fmt.Println("putting content at path")
-   err = d.PutContent(ctx, subPath, buf)
-   if err != nil {
-     return totalRead, err
-   }
-   totalRead += int64(len(buf))
-   //totalRead += sizeRead
-   if EOF {
-     return totalRead, nil
-   }
-  //Continue writing chunks to hdfs until error or EOF then break.
+  firstPass := true
   for {
-    //fmt.Println("for loop writing chunk of bytes")
+    buf := d.getbuf()
     //read bytes up to defaultChunkSize into buffer
 		// Read from `reader` this function loops until sizeRead is equal to sizeToRead
     //or EOF it must keep reading until then because EOF only occurs when
     //exactly 0 bytes are read therefore if EOF is hit and some bytes were read
     //as well the Read function wont indicate EOF but another error entirely.
-    sizeRead = 0
-		for sizeRead < sizeToRead {
-			readBytes, err := reader.Read(buf[sizeRead:sizeToRead])
-			sizeRead = uint64(readBytes)
+    // Align to chunk size
+		sizeRead := uint64(0)
+		sizeToRead := uint64(offset+totalRead) % defaultChunkSize
+		if sizeToRead == 0 {
+			sizeToRead = defaultChunkSize
+		}
 
+		// Read from `reader`
+    EOF := false
+		for sizeRead < sizeToRead {
+			n, err := reader.Read(buf[sizeRead:sizeToRead])
+			sizeRead += uint64(n)
 			if err != nil {
 				if err != io.EOF {
 					return totalRead, err
 				}
-        fmt.Println(sizeRead)
-        fmt.Println("EOF REACHED")
         EOF = true
 				break
 			}
 		}
-    // End of file and nothing was read
-		if EOF {
+
+		// End of file and nothing was read
+		if sizeRead == 0 {
 			break
 		}
     //open file in hdfs with append option and write the buffer onto the end of the file.
+    method := "APPEND"
+    httpRequestType := "POST"
+    if firstPass {
+      method = "CREATE"
+      httpRequestType = "PUT"
+      firstPass = false
+    }
     requestOptions := map[string]string{
-      "method": "APPEND",
+      "method": method,
     }
 
     requestURI, err := getHdfsURI(subPath, requestOptions, d)
     if err != nil {
       return totalRead, err
     }
-    req, err := http.NewRequest("POST", requestURI, nil)
+    req, err := http.NewRequest(httpRequestType, requestURI, nil)
     if err != nil {
       return totalRead, err
     }
@@ -334,7 +306,7 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
 
     requestURI = resp.Header["Location"][0]
     //TODO deal with file permissions.
-    req, err = http.NewRequest("POST", requestURI + "&user.name=jakecharland", bytes.NewBuffer(buf))
+    req, err = http.NewRequest(httpRequestType, requestURI + "&user.name=jakecharland", bytes.NewBuffer(buf[:sizeRead]))
     if err != nil{
       return totalRead, err
     }
@@ -345,13 +317,14 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
     defer resp1.Body.Close()
 
     //update nn with the number of bytes written
-    totalRead += int64(len(buf))
-    // End of file
-		if sizeRead < sizeToRead {
+    totalRead += int64(sizeRead)
+		// End of file
+
+		if EOF {
 			break
 		}
+    d.putbuf(buf) // needs to be here to pick up new buf value
   }
-  buf = d.getbuf()
   return totalRead, nil
 }
 
@@ -506,7 +479,7 @@ func getHdfsURI(path string, options map[string]string, d *driver)(string, error
           return "", nil
         }
       case "CREATE":
-        fullURI = baseURI + "?op=CREATE"
+        fullURI = baseURI + "?op=CREATE&overwrite=true"
       case "LISTSTATUS":
         fullURI = baseURI + "?op=LISTSTATUS"
       case "APPEND":

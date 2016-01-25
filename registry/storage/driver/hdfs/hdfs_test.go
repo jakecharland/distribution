@@ -8,10 +8,11 @@ import (
   "io"
   "os"
   "fmt"
-  "crypto/sha1"
+  //"crypto/sha1"
   "sync"
   "strconv"
-  //"github.com/jakecharland/distribution/registry/storage/driver/testsuites"
+  "bytes"
+  "github.com/jakecharland/distribution/registry/storage/driver/testsuites"
   "github.com/docker/distribution/context"
 )
 // Hook up gocheck into the "go test" runner.
@@ -44,9 +45,9 @@ func init() {
     return ""
   }
 
-  // testsuites.RegisterSuite(func() (storagedriver.StorageDriver, error) {
-	// 	return hdfsDriverConstructor(root)
-	// }, skipHdfs)
+  testsuites.RegisterSuite(func() (storagedriver.StorageDriver, error) {
+		return hdfsDriverConstructor(root)
+	}, skipHdfs)
   //TestHdfsFileStat(test)
 }
 
@@ -207,13 +208,13 @@ func TestWriteStream(t *testing.T){
     fmt.Println(err)
     return
 	}
-  checksum := sha1.New()
-	var fileSize int64 = 10 * 1024 * 1024
+  //checksum := sha1.New()
+	var fileSize int64 = 3 * 1024 * 1024
 
-	contents := newRandReader(fileSize)
+	//contents := newRandReader(fileSize)
   path := "/docker/testWriteLargeStream.txt"
   ctx := context.Background()
-  written, err := rootedDriver.WriteStream(ctx, path, 0, io.TeeReader(contents, checksum))
+  written, err := rootedDriver.WriteStream(ctx, path, 0, bytes.NewReader(randomContents(fileSize)))
   if err != nil {
     fmt.Println(err)
     t.FailNow()
