@@ -7,13 +7,15 @@ import (
   "io/ioutil"
   "os"
   "fmt"
-  //"github.com/docker/distribution/registry/storage/driver/testsuites"
+  "github.com/docker/distribution/registry/storage/driver/testsuites"
   "github.com/docker/distribution/context"
 )
 // Hook up gocheck into the "go test" runner.
 func Test(t *testing.T) {
   check.TestingT(t)
 }
+
+var skipHdfs func() string
 
 var hdfsDriverConstructor func(rootDirectory string) (storagedriver.StorageDriver, error)
 
@@ -34,9 +36,13 @@ func init() {
     return New(parameters), nil
   }
 
-  /*testsuites.RegisterSuite(func() (storagedriver.StorageDriver, error) {
+  skipHdfs = func() string {
+    return ""
+  }
+
+  testsuites.RegisterSuite(func() (storagedriver.StorageDriver, error) {
 		return hdfsDriverConstructor(root)
-	}, skipHdfs)*/
+	}, skipHdfs)
   //TestHdfsFileStat(test)
 }
 

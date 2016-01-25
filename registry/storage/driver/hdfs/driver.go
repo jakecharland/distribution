@@ -21,10 +21,13 @@ import (
 
 const driverName = "hdfs"
 const defaultRootDirectory = "/"
-const minChunkSize = 5 << 20
 const defaultHdfsURL = "10.0.1.18"
 const defaultPort = "50070"
-const defaultChunkSize = 2 * minChunkSize
+
+//Set defaultChunkSize to 125mb which is the default chunk size for hdfs
+//const defaultChunkSize = 1.25e+8
+const defaultChunkSize = 5e+6
+var skipS3 func() string
 
 //DriverParameters contains the url and port for the namenode of your
 //HDFS cluster the RootDirectory is where all data will be relative to.
@@ -198,15 +201,19 @@ func (d *driver) PutContent(ctx context.Context, path string, contents []byte) e
   }
   requestURI = resp.Header["Location"][0]
   //TODO deal with file permissions.
+  fmt.Println("Before put buffer")
+  resp.Body.Close()
   req, err = http.NewRequest("PUT", requestURI + "&user.name=jakecharland", bytes.NewBuffer(contents))
   if err != nil{
     return err
   }
   resp1, err := d.Client.Do(req)
+  fmt.Println("After put buffer")
   if err != nil{
     return err
   }
   defer resp1.Body.Close()
+  fmt.Println("exiting PutContent")
   return nil
 }
 
@@ -227,6 +234,7 @@ func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.
   if err != nil {
     return nil, err
   }
+  defer resp.Body.Close()
   return resp.Body, nil
 }
 
@@ -238,7 +246,110 @@ func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.
 // offset. Offsets past the current size will write from the position
 // beyond the end of the file.
 func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, reader io.Reader) (nn int64, err error) {
-  return 0, nil
+  totalRead := int64(0)
+  offset = 0
+  fmt.Println("Run write stream")
+  done := make(chan struct{}) // stopgap to free up waiting goroutines
+
+  buf := d.getbuf()
+
+  defer func() {
+		d.putbuf(buf) // needs to be here to pick up new buf value
+		close(done)   // free up any waiting goroutines
+	}()
+  /*
+   *TODO Check total object size for exisiting file and write from offset
+   *for now implementing niave solution of just writing the whole file again.
+   */
+   sizeToRead := uint64(defaultChunkSize)
+   sizeRead := uint64(0)
+   EOF := false
+   for sizeRead < sizeToRead {
+     fmt.Println("looping on buf")
+     nn, err := reader.Read(buf[sizeRead:sizeToRead])
+     sizeRead += uint64(nn)
+
+     if err != nil {
+       if err != io.EOF {
+         return totalRead, err
+       }
+       EOF = true
+       break
+     }
+   }
+   fmt.Println("putting content at path")
+   err = d.PutContent(ctx, subPath, buf)
+   if err != nil {
+     return totalRead, err
+   }
+   totalRead += int64(sizeRead)
+   if EOF {
+     return totalRead, nil
+   }
+  //Continue writing chunks to hdfs until error or EOF then break.
+  for {
+    fmt.Println("for loop writing chunk of bytes")
+    //read bytes up to defaultChunkSize into buffer
+		// Read from `reader` this function loops until sizeRead is equal to sizeToRead
+    //or EOF it must keep reading until then because EOF only occurs when
+    //exactly 0 bytes are read therefore if EOF is hit and some bytes were read
+    //as well the Read function wont indicate EOF but another error entirely.
+    sizeRead = 0
+		for sizeRead < sizeToRead {
+			nn, err := reader.Read(buf[sizeRead:sizeToRead])
+			sizeRead += uint64(nn)
+
+			if err != nil {
+				if err != io.EOF {
+					return totalRead, err
+				}
+				break
+			}
+		}
+    // End of file and nothing was read
+		if sizeRead == 0 {
+			break
+		}
+    //open file in hdfs with append option and write the buffer onto the end of the file.
+    requestOptions := map[string]string{
+      "method": "APPEND",
+    }
+
+    requestURI, err := getHdfsURI(subPath, requestOptions, d)
+    if err != nil {
+      return totalRead, err
+    }
+    req, err := http.NewRequest("POST", requestURI, nil)
+    if err != nil {
+      return totalRead, err
+    }
+    resp, err := d.Client.Do(req)
+    defer resp.Body.Close()
+    if err != nil {
+      return totalRead, err
+    }
+
+    requestURI = resp.Header["Location"][0]
+    //TODO deal with file permissions.
+    req, err = http.NewRequest("POST", requestURI + "&user.name=jakecharland", bytes.NewBuffer(buf))
+    if err != nil{
+      return totalRead, err
+    }
+    resp1, err := d.Client.Do(req)
+    if err != nil{
+      return totalRead, err
+    }
+    defer resp1.Body.Close()
+
+    //update nn with the number of bytes written
+    totalRead += int64(sizeRead)
+    // End of file
+		if sizeRead < sizeToRead {
+			break
+		}
+  }
+  fmt.Println("Total bytes read = " + strconv.FormatInt(totalRead, 10))
+  return totalRead, nil
 }
 
 // Stat retrieves the FileInfo for the given path, including the current size
@@ -345,12 +456,18 @@ func (d *driver) Delete(ctx context.Context, subPath string) error {
   }
   requestURI, err := getHdfsURI(subPath, requestOptions, d)
   if err != nil {
-
+    return err
   }
   req, err := http.NewRequest("DELETE", requestURI + "&user.name=jakecharland", nil)
+  if err != nil {
+    return err
+  }
   resp, err := d.Client.Do(req)
+  if err != nil {
+    return err
+  }
   defer resp.Body.Close()
-  return err
+  return nil
 }
 
 // URLFor returns a URL which may be used to retrieve the content stored at the given path.
@@ -389,6 +506,8 @@ func getHdfsURI(path string, options map[string]string, d *driver)(string, error
         fullURI = baseURI + "?op=CREATE"
       case "LISTSTATUS":
         fullURI = baseURI + "?op=LISTSTATUS"
+      case "APPEND":
+        fullURI = baseURI + "?op=APPEND&buffersize=" + strconv.FormatInt(defaultChunkSize, 10)
       default:
         return "", storagedriver.ErrUnsupportedMethod{}
     }
@@ -410,6 +529,15 @@ func getHdfsURI(path string, options map[string]string, d *driver)(string, error
 func redirectPolicyFunc(req *http.Request, via []*http.Request) error {
   fmt.Println("canceling redirect")
   return errors.New("cancel")
+}
+
+func (d *driver) getbuf() []byte {
+	return d.pool.Get().([]byte)
+}
+
+func (d *driver) putbuf(p []byte) {
+	copy(p, d.zeros)
+	d.pool.Put(p)
 }
 
 func getJSON(r *http.Response, target interface{}) error {
