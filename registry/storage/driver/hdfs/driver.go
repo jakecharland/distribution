@@ -170,7 +170,7 @@ func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
+  defer rc.Close()
 	p, err := ioutil.ReadAll(rc)
 	if err != nil {
 		return nil, err
@@ -200,19 +200,19 @@ func (d *driver) PutContent(ctx context.Context, path string, contents []byte) e
   }
   requestURI = resp.Header["Location"][0]
   //TODO deal with file permissions.
-  fmt.Println("Before put buffer")
+  //fmt.Println("Before put buffer")
   resp.Body.Close()
   req, err = http.NewRequest("PUT", requestURI + "&user.name=jakecharland", bytes.NewBuffer(contents))
   if err != nil{
     return err
   }
   resp1, err := d.Client.Do(req)
-  fmt.Println("After put buffer")
+  //fmt.Println("After put buffer")
   if err != nil{
     return err
   }
   defer resp1.Body.Close()
-  fmt.Println("exiting PutContent")
+  //fmt.Println("exiting PutContent")
   return nil
 }
 
@@ -234,8 +234,7 @@ func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.
     return nil, err
   }
   defer resp.Body.Close()
-  respBody := resp.Body
-  return respBody, nil
+  return resp.Body, nil
 }
 
 // WriteStream stores the contents of the provided io.Reader at a
@@ -248,7 +247,7 @@ func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.
 func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, reader io.Reader) (nn int64, err error) {
   totalRead := int64(0)
   offset = 0
-  fmt.Println("Run write stream")
+  //fmt.Println("Run write stream")
   done := make(chan struct{}) // stopgap to free up waiting goroutines
 
   buf := d.getbuf()
@@ -265,10 +264,10 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
    sizeRead := uint64(0)
    EOF := false
    for sizeRead < sizeToRead {
-     fmt.Println("looping on buf")
-     nn, err := reader.Read(buf[sizeRead:sizeToRead])
-     sizeRead += uint64(nn)
-
+     //fmt.Println("looping on buf")
+     bytesRead, err := reader.Read(buf[sizeRead:sizeToRead])
+     //totalRead += uint64(bytesRead)
+     fmt.Println(bytesRead)
      if err != nil {
        if err != io.EOF {
          return totalRead, err
@@ -277,18 +276,19 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
        break
      }
    }
-   fmt.Println("putting content at path")
+   //fmt.Println("putting content at path")
    err = d.PutContent(ctx, subPath, buf)
    if err != nil {
      return totalRead, err
    }
-   totalRead += int64(sizeRead)
+   totalRead += int64(len(buf))
+   //totalRead += sizeRead
    if EOF {
      return totalRead, nil
    }
   //Continue writing chunks to hdfs until error or EOF then break.
   for {
-    fmt.Println("for loop writing chunk of bytes")
+    //fmt.Println("for loop writing chunk of bytes")
     //read bytes up to defaultChunkSize into buffer
 		// Read from `reader` this function loops until sizeRead is equal to sizeToRead
     //or EOF it must keep reading until then because EOF only occurs when
@@ -296,18 +296,21 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
     //as well the Read function wont indicate EOF but another error entirely.
     sizeRead = 0
 		for sizeRead < sizeToRead {
-			nn, err := reader.Read(buf[sizeRead:sizeToRead])
-			sizeRead += uint64(nn)
+			readBytes, err := reader.Read(buf[sizeRead:sizeToRead])
+			sizeRead = uint64(readBytes)
 
 			if err != nil {
 				if err != io.EOF {
 					return totalRead, err
 				}
+        fmt.Println(sizeRead)
+        fmt.Println("EOF REACHED")
+        EOF = true
 				break
 			}
 		}
     // End of file and nothing was read
-		if sizeRead == 0 {
+		if EOF {
 			break
 		}
     //open file in hdfs with append option and write the buffer onto the end of the file.
@@ -342,13 +345,13 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
     defer resp1.Body.Close()
 
     //update nn with the number of bytes written
-    totalRead += int64(sizeRead)
+    totalRead += int64(len(buf))
     // End of file
 		if sizeRead < sizeToRead {
 			break
 		}
   }
-  fmt.Println("Total bytes read = " + strconv.FormatInt(totalRead, 10))
+  buf = d.getbuf()
   return totalRead, nil
 }
 
