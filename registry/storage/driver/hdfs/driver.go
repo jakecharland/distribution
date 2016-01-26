@@ -21,12 +21,12 @@ import (
 
 const driverName = "hdfs"
 const defaultRootDirectory = "/"
-const defaultHdfsURL = "10.0.1.18"
+const defaultHdfsURL = "127.0.0.1"
 const defaultPort = "50070"
 
 //Set defaultChunkSize to 5mb which is the default chunk size for hdfs
-//const defaultChunkSize = 1.25e+8
-const defaultChunkSize = 10 * 1024 * 1024
+const defaultChunkSize = 1.25e+8
+//const defaultChunkSize = 10 * 1024 * 1024
 var skipS3 func() string
 
 //DriverParameters contains the url and port for the namenode of your
