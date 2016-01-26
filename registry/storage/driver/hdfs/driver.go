@@ -11,6 +11,7 @@ import (
   "io/ioutil"
   "errors"
   "bytes"
+  "path"
 
   "github.com/docker/distribution/context"
   storagedriver "github.com/docker/distribution/registry/storage/driver"
@@ -266,7 +267,6 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
         //if offset is equal to the file size we can simply append to the file.
         //by setting firstPass equal to false the write stream will simply append
         //only instead of creating the file first.
-        fmt.Println("Append")
         firstPass = false
   	}
 
@@ -275,9 +275,6 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
       //from that point on. The truncate rest api for webhdfs allows you to specify
       //the length of the new file therefore we want to truncate with
       //newLength = offset
-      fmt.Println("Truncate")
-      fmt.Println(offset)
-      fmt.Println(fi.Size())
       firstPass = false
       requestOptions := map[string]string{
         "method": "TRUNCATE",
@@ -287,29 +284,24 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
       if err != nil {
         return totalRead, err
       }
-      fmt.Println(requestURI)
       resp, err := http.Post(requestURI, "application/octet-stream", nil)
       if err != nil {
         return totalRead, err
       }
       //resp, err := d.Client.Do(req)
-      printResponseBody(resp)
       resp.Body.Close()
       //Have to call truncate twice because webHDFS refuses to work the first
       //time you call it but works fine the second time if you wait for
       //two, not one but two seconds.....WTF???????
-      time.Sleep(1000*1000*1000*2)
+      time.Sleep(1000*1000*1000*4)
       resp1, err := http.Post(requestURI, "application/json", nil)
       if err != nil {
         return totalRead, err
       }
       //resp, err := d.Client.Do(req)
       resp1.Body.Close()
-      fi, err := d.Stat(ctx, subPath)
-      fmt.Println(fi.Size())
     }
     if offset > fi.Size() {
-      fmt.Println("PAST FILE SIZE")
       firstPass = false
       zeroBufSize := offset - fi.Size()
       requestOptions := map[string]string{
@@ -383,7 +375,6 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
     method := "APPEND"
     httpRequestType := "POST"
     if firstPass {
-      fmt.Println("Create")
       method = "CREATE"
       httpRequestType = "PUT"
       firstPass = false
@@ -416,10 +407,7 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
     if err != nil{
       return totalRead, err
     }
-    fmt.Println(httpRequestType)
-    fmt.Println(requestURI)
     defer resp1.Body.Close()
-    printResponseBody(resp1)
     //update nn with the number of bytes written
     totalRead += int64(sizeRead)
 		// End of file
@@ -526,7 +514,34 @@ func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) e
     return storagedriver.PathNotFoundError{Path: sourcePath}
   }
 
-  _ = d.Delete(ctx, destPath)
+  fi, _ := d.Stat(ctx, destPath)
+  if fi != nil {
+    fmt.Println("Destinfo")
+    fmt.Println(fi)
+    if !fi.IsDir(){
+      _ = d.Delete(ctx, destPath)
+    }
+  } else {
+    //Mkdir since it doesnt exist
+    destDir := path.Dir(destPath)
+    requestOptions := map[string]string{
+      "method": "MKDIRS",
+    }
+    requestURI, err := getHdfsURI(destDir, requestOptions, d)
+    if err != nil {
+      return err
+    }
+
+    req, err := http.NewRequest("PUT", requestURI, nil)
+    if err != nil {
+      return err
+    }
+    resp, err := d.Client.Do(req)
+    if err != nil {
+      return err
+    }
+    resp.Body.Close()
+  }
 
   requestOptions := map[string]string{
     "method": "RENAME",
@@ -619,8 +634,6 @@ func getHdfsURI(path string, options map[string]string, d *driver)(string, error
       case "TRUNCATE":
         newLength, ok := options["newLength"]
         if ok{
-          fmt.Println("Truncate length")
-          fmt.Println(newLength)
           fullURI = baseURI + "?op=TRUNCATE&newlength=" + newLength + "&user.name=jakecharland"
         } else {
           return "", nil
