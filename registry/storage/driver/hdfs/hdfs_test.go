@@ -26,6 +26,7 @@ var hdfsDriverConstructor func(rootDirectory string) (storagedriver.StorageDrive
 
 func init() {
   hdfsURL := "172.17.100.236"
+  //hdfsURL := "10.0.1.18"
   port := "50070"
   root, err := ioutil.TempDir("", "driver-")
   if err != nil {

@@ -167,11 +167,9 @@ func (d *driver) Name() string {
 func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
   fi, err := d.Stat(ctx, path)
   if err != nil {
-    fmt.Println(err)
     return nil, storagedriver.PathNotFoundError{Path: path}
   }
   if fi.IsDir(){
-    fmt.Println(err)
     return nil, storagedriver.PathNotFoundError{Path: path}
   }
   rc, err := d.ReadStream(ctx, path, 0)
@@ -208,7 +206,6 @@ func (d *driver) PutContent(ctx context.Context, path string, contents []byte) e
   }
   requestURI = resp.Header["Location"][0]
   //TODO deal with file permissions.
-  //fmt.Println("Before put buffer")
   resp.Body.Close()
   req, err = http.NewRequest("PUT", requestURI + "&user.name=jakecharland", bytes.NewBuffer(contents))
   if err != nil{
@@ -234,6 +231,9 @@ func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.
   if fi.IsDir(){
     return nil, storagedriver.PathNotFoundError{Path: path}
   }
+  if offset >= fi.Size() {
+		return ioutil.NopCloser(bytes.NewReader(nil)), nil
+	}
   requestOptions := map[string]string{
     "method": "OPEN",
     "offset": strconv.FormatInt(offset, 10),
@@ -434,7 +434,6 @@ func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) e
   //Make sure that the file to be moved exists
   _, err := d.Stat(ctx, sourcePath)
   if err != nil {
-    fmt.Println(err)
     return storagedriver.PathNotFoundError{Path: sourcePath}
   }
 
@@ -547,7 +546,6 @@ func getHdfsURI(path string, options map[string]string, d *driver)(string, error
 // If CheckRedirect is nil, the Client uses its default policy,
 // which is to stop after 10 consecutive requests.
 func redirectPolicyFunc(req *http.Request, via []*http.Request) error {
-  fmt.Println("canceling redirect")
   return errors.New("cancel")
 }
 
