@@ -165,6 +165,15 @@ func (d *driver) Name() string {
 
 // GetContent retrieves the content stored at "path" as a []byte.
 func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
+  fi, err := d.Stat(ctx, path)
+  if err != nil {
+    fmt.Println(err)
+    return nil, storagedriver.PathNotFoundError{Path: path}
+  }
+  if fi.IsDir(){
+    fmt.Println(err)
+    return nil, storagedriver.PathNotFoundError{Path: path}
+  }
   rc, err := d.ReadStream(ctx, path, 0)
 	if err != nil {
 		return nil, err
@@ -206,12 +215,11 @@ func (d *driver) PutContent(ctx context.Context, path string, contents []byte) e
     return err
   }
   resp1, err := d.Client.Do(req)
-  //fmt.Println("After put buffer")
+
   if err != nil{
     return err
   }
   defer resp1.Body.Close()
-  //fmt.Println("exiting PutContent")
   return nil
 }
 
@@ -219,6 +227,13 @@ func (d *driver) PutContent(ctx context.Context, path string, contents []byte) e
 // given byte offset.
 func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.ReadCloser, error) {
   //TODO check if file exists before reading from hdfs.
+  fi, err := d.Stat(ctx, path)
+  if err != nil {
+    return nil, storagedriver.PathNotFoundError{Path: path}
+  }
+  if fi.IsDir(){
+    return nil, storagedriver.PathNotFoundError{Path: path}
+  }
   requestOptions := map[string]string{
     "method": "OPEN",
     "offset": strconv.FormatInt(offset, 10),
@@ -336,7 +351,7 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
   }
   requestURI, err := getHdfsURI(subPath, requestOptions, d)
   if err != nil {
-
+    return nil, err
   }
   //TODO check if the file exists before calling getfileStatus
   resp, err := http.Get(requestURI)
@@ -346,9 +361,12 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
   defer resp.Body.Close()
   FileStatusJSON := FileStatusJSON{}
   err = getJSON(resp, &FileStatusJSON)
-
   if err != nil{
     return nil, err
+  }
+
+  if FileStatusJSON.FileStatus.FileType == ""{
+    return nil, storagedriver.PathNotFoundError{Path: subPath}
   }
 
   fi := storagedriver.FileInfoFields{
@@ -372,6 +390,14 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
 // List returns a list of the objects that are direct descendants of the given
 // path.
 func (d *driver) List(ctx context.Context, subPath string) ([]string, error) {
+  //Make sure that the file to be moved exists
+  fi, err := d.Stat(ctx, subPath)
+  if err != nil {
+    return nil, storagedriver.PathNotFoundError{Path: subPath}
+  }
+  if !fi.IsDir(){
+    return nil, storagedriver.PathNotFoundError{Path: subPath}
+  }
   requestOptions := map[string]string{
     "method": "LISTSTATUS",
   }
@@ -392,7 +418,11 @@ func (d *driver) List(ctx context.Context, subPath string) ([]string, error) {
   files := []string{}
   for _, element := range FileStatusesJSON.FileStatuses.FileStatus {
   // element is the element from someSlice for where we are
-  files = append(files, subPath + "/" + element.PathSuffix)
+  addSlash := "/"
+  if subPath == "/"{
+    addSlash = ""
+  }
+  files = append(files, subPath + addSlash + element.PathSuffix)
   }
 
   return files, nil
@@ -401,7 +431,15 @@ func (d *driver) List(ctx context.Context, subPath string) ([]string, error) {
 // Move moves an object stored at sourcePath to destPath, removing the original
 // object.
 func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) error {
-  //curl -i -X PUT "http://10.0.1.18:50070/webhdfs/v1/jake?op=RENAME&destination=<PATH>"
+  //Make sure that the file to be moved exists
+  _, err := d.Stat(ctx, sourcePath)
+  if err != nil {
+    fmt.Println(err)
+    return storagedriver.PathNotFoundError{Path: sourcePath}
+  }
+
+  _ = d.Delete(ctx, destPath)
+
   requestOptions := map[string]string{
     "method": "RENAME",
     "destPath": destPath,
@@ -410,8 +448,7 @@ func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) e
   if err != nil {
     return err
   }
-  //TODO check if the file exists before calling move
-  //TODO file permissions
+
   req, err := http.NewRequest("PUT", requestURI + "&user.name=jakecharland", nil)
   if err != nil {
     return err
@@ -420,6 +457,7 @@ func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) e
   if err != nil {
     return err
   }
+
   defer resp.Body.Close()
   return nil
 }
@@ -427,6 +465,10 @@ func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) e
 // Delete recursively deletes all objects stored at "path" and its subpaths.
 func (d *driver) Delete(ctx context.Context, subPath string) error {
   //curl -i -X DELETE "http://10.0.1.18:50070/webhdfs/v1/jake?op=DELETE&recursive=true
+  _, err := d.Stat(ctx, subPath)
+  if err != nil{
+    return storagedriver.PathNotFoundError{Path: subPath}
+  }
   requestOptions := map[string]string{
     "method": "DELETE",
   }
@@ -484,6 +526,8 @@ func getHdfsURI(path string, options map[string]string, d *driver)(string, error
         fullURI = baseURI + "?op=LISTSTATUS"
       case "APPEND":
         fullURI = baseURI + "?op=APPEND&buffersize=" + strconv.FormatInt(defaultChunkSize, 10)
+      case "MKDIRS":
+        fullURI = baseURI + "?op=MKDIRS"
       default:
         return "", storagedriver.ErrUnsupportedMethod{}
     }
