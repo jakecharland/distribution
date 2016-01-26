@@ -207,7 +207,7 @@ func (d *driver) PutContent(ctx context.Context, path string, contents []byte) e
   requestURI = resp.Header["Location"][0]
   //TODO deal with file permissions.
   resp.Body.Close()
-  req, err = http.NewRequest("PUT", requestURI + "&user.name=jakecharland", bytes.NewBuffer(contents))
+  req, err = http.NewRequest("PUT", requestURI, bytes.NewBuffer(contents))
   if err != nil{
     return err
   }
@@ -259,8 +259,94 @@ func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.
 // beyond the end of the file.
 func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, reader io.Reader) (nn int64, err error) {
   totalRead := int64(0)
-  offset = 0
   firstPass := true
+  fi, _ := d.Stat(ctx, subPath)
+  if fi != nil{
+    if offset == fi.Size() {
+        //if offset is equal to the file size we can simply append to the file.
+        //by setting firstPass equal to false the write stream will simply append
+        //only instead of creating the file first.
+        fmt.Println("Append")
+        firstPass = false
+  	}
+
+    if offset < fi.Size() {
+      //In this case we must truncate the file back to the offset and then append
+      //from that point on. The truncate rest api for webhdfs allows you to specify
+      //the length of the new file therefore we want to truncate with
+      //newLength = offset
+      fmt.Println("Truncate")
+      fmt.Println(offset)
+      fmt.Println(fi.Size())
+      firstPass = false
+      requestOptions := map[string]string{
+        "method": "TRUNCATE",
+        "newLength": strconv.FormatInt(offset, 10),
+      }
+      requestURI, err := getHdfsURI(subPath, requestOptions, d)
+      if err != nil {
+        return totalRead, err
+      }
+      fmt.Println(requestURI)
+      resp, err := http.Post(requestURI, "application/octet-stream", nil)
+      if err != nil {
+        return totalRead, err
+      }
+      //resp, err := d.Client.Do(req)
+      printResponseBody(resp)
+      resp.Body.Close()
+      //Have to call truncate twice because webHDFS refuses to work the first
+      //time you call it but works fine the second time if you wait for
+      //two, not one but two seconds.....WTF???????
+      time.Sleep(1000*1000*1000*2)
+      resp1, err := http.Post(requestURI, "application/json", nil)
+      if err != nil {
+        return totalRead, err
+      }
+      //resp, err := d.Client.Do(req)
+      resp1.Body.Close()
+      fi, err := d.Stat(ctx, subPath)
+      fmt.Println(fi.Size())
+    }
+    if offset > fi.Size() {
+      fmt.Println("PAST FILE SIZE")
+      firstPass = false
+      zeroBufSize := offset - fi.Size()
+      requestOptions := map[string]string{
+        "method": "APPEND",
+      }
+
+      requestURI, err := getHdfsURI(subPath, requestOptions, d)
+      if err != nil {
+        return totalRead, err
+      }
+      req, err := http.NewRequest("POST", requestURI, nil)
+      if err != nil {
+        return totalRead, err
+      }
+      resp, err := d.Client.Do(req)
+      defer resp.Body.Close()
+      if err != nil {
+        return totalRead, err
+      }
+
+      requestURI = resp.Header["Location"][0]
+      //TODO deal with file permissions.
+        buf := d.getbuf()
+      req, err = http.NewRequest("POST", requestURI, bytes.NewBuffer(buf[:zeroBufSize]))
+      if err != nil{
+        return totalRead, err
+      }
+      resp1, err := d.Client.Do(req)
+      if err != nil{
+        return totalRead, err
+      }
+      //totalRead += zeroBufSize
+      resp1.Body.Close()
+      d.putbuf(buf)
+    }
+  }
+
   for {
     buf := d.getbuf()
     //read bytes up to defaultChunkSize into buffer
@@ -297,6 +383,7 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
     method := "APPEND"
     httpRequestType := "POST"
     if firstPass {
+      fmt.Println("Create")
       method = "CREATE"
       httpRequestType = "PUT"
       firstPass = false
@@ -321,7 +408,7 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
 
     requestURI = resp.Header["Location"][0]
     //TODO deal with file permissions.
-    req, err = http.NewRequest(httpRequestType, requestURI + "&user.name=jakecharland", bytes.NewBuffer(buf[:sizeRead]))
+    req, err = http.NewRequest(httpRequestType, requestURI, bytes.NewBuffer(buf[:sizeRead]))
     if err != nil{
       return totalRead, err
     }
@@ -329,8 +416,10 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
     if err != nil{
       return totalRead, err
     }
+    fmt.Println(httpRequestType)
+    fmt.Println(requestURI)
     defer resp1.Body.Close()
-
+    printResponseBody(resp1)
     //update nn with the number of bytes written
     totalRead += int64(sizeRead)
 		// End of file
@@ -448,7 +537,7 @@ func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) e
     return err
   }
 
-  req, err := http.NewRequest("PUT", requestURI + "&user.name=jakecharland", nil)
+  req, err := http.NewRequest("PUT", requestURI, nil)
   if err != nil {
     return err
   }
@@ -475,7 +564,7 @@ func (d *driver) Delete(ctx context.Context, subPath string) error {
   if err != nil {
     return err
   }
-  req, err := http.NewRequest("DELETE", requestURI + "&user.name=jakecharland", nil)
+  req, err := http.NewRequest("DELETE", requestURI, nil)
   if err != nil {
     return err
   }
@@ -502,31 +591,40 @@ func getHdfsURI(path string, options map[string]string, d *driver)(string, error
   if ok {
     switch method {
     case "GETFILESTATUS":
-        fullURI = baseURI + "?op=GETFILESTATUS"
+        fullURI = baseURI + "?op=GETFILESTATUS&user.name=jakecharland"
       case "DELETE":
-        fullURI = baseURI + "?op=DELETE&recursive=true"
+        fullURI = baseURI + "?op=DELETE&recursive=true&user.name=jakecharland"
       case "RENAME":
         destPath, ok := options["destPath"]
         if ok {
-          fullURI = baseURI + "?op=RENAME&destination=" + fmt.Sprint(destPath)
+          fullURI = baseURI + "?op=RENAME&destination=" + fmt.Sprint(destPath) + "&user.name=jakecharland"
         } else {
           return "", nil
         }
       case "OPEN":
         offset, ok := options["offset"]
         if ok{
-          fullURI = baseURI + "?op=OPEN&offset=" + offset
+          fullURI = baseURI + "?op=OPEN&offset=" + offset + "&user.name=jakecharland"
         } else {
           return "", nil
         }
       case "CREATE":
-        fullURI = baseURI + "?op=CREATE&overwrite=true"
+        fullURI = baseURI + "?op=CREATE&overwrite=true&user.name=jakecharland"
       case "LISTSTATUS":
-        fullURI = baseURI + "?op=LISTSTATUS"
+        fullURI = baseURI + "?op=LISTSTATUS&user.name=jakecharland"
       case "APPEND":
-        fullURI = baseURI + "?op=APPEND&buffersize=" + strconv.FormatInt(defaultChunkSize, 10)
+        fullURI = baseURI + "?op=APPEND&buffersize=" + strconv.FormatInt(defaultChunkSize, 10) + "&user.name=jakecharland"
       case "MKDIRS":
-        fullURI = baseURI + "?op=MKDIRS"
+        fullURI = baseURI + "?op=MKDIRS&user.name=jakecharland"
+      case "TRUNCATE":
+        newLength, ok := options["newLength"]
+        if ok{
+          fmt.Println("Truncate length")
+          fmt.Println(newLength)
+          fullURI = baseURI + "?op=TRUNCATE&newlength=" + newLength + "&user.name=jakecharland"
+        } else {
+          return "", nil
+        }
       default:
         return "", storagedriver.ErrUnsupportedMethod{}
     }
@@ -569,4 +667,14 @@ func msToTime(ms string) (time.Time, error) {
     }
 
     return time.Unix(0, msInt*int64(time.Millisecond)), nil
+}
+
+func printResponseBody(r *http.Response) error{
+  contents, err := ioutil.ReadAll(r.Body)
+  if err != nil {
+      fmt.Printf("%s", err)
+      return err
+  }
+  fmt.Printf("%s\n", string(contents))
+  return nil
 }
