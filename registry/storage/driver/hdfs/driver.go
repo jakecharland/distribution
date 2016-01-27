@@ -146,6 +146,7 @@ func FromParameters(parameters map[string]interface{}) *Driver {
 
 // New constructs a new Driver with a given rootDirectory
 func New(params DriverParameters) *Driver {
+  fmt.Println(params.UserName)
   client := &http.Client{
 	   CheckRedirect: redirectPolicyFunc,
   }

@@ -19,10 +19,10 @@ var skipHdfs func() string
 var hdfsDriverConstructor func(rootDirectory string) (storagedriver.StorageDriver, error)
 
 func init() {
-  hdfsURL := "172.17.100.236"
+  hdfsURL := "lmthdfs01.ve.selfhost.corp.microsoft.com"
   //hdfsURL := "10.0.1.18"
   port := "50070"
-  username := "jakecharland"
+  username := "docker"
   NewRootDirectory := "/dockerRegistry"
   root, err := ioutil.TempDir("", "driver-")
   if err != nil {
