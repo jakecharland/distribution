@@ -22,6 +22,7 @@ func init() {
   hdfsURL := "172.17.100.236"
   //hdfsURL := "10.0.1.18"
   port := "50070"
+  username := "jakecharland"
   root, err := ioutil.TempDir("", "driver-")
   if err != nil {
 		panic(err)
@@ -32,6 +33,7 @@ func init() {
       hdfsURL,
       port,
       rootDirectory,
+      username,
     }
     return New(parameters), nil
   }

@@ -23,10 +23,10 @@ const driverName = "hdfs"
 const defaultRootDirectory = "/"
 const defaultHdfsURL = "127.0.0.1"
 const defaultPort = "50070"
+const defaultUserName = "hdfs"
 
 //Set defaultChunkSize to 125mb which is the default block size for hdfs
 const defaultChunkSize = 1.25e+8
-var skipS3 func() string
 
 //DriverParameters contains the url and port for the namenode of your
 //HDFS cluster the RootDirectory is where all data will be relative to.
@@ -34,7 +34,8 @@ type DriverParameters struct {
 	HdfsURL       string
 	Port          string
   RootDirectory string
-  //TODO add user for now I will just use user docker
+  UserName     string
+  //TODO add user for now I will just use user hdfs
 }
 
 //FileStatusJSON contains the structure of the response from HDFS status of a
@@ -85,6 +86,7 @@ type driver struct {
 	HdfsURL       string
 	Port          string
 	RootDirectory string
+  UserName      string
 
   pool  sync.Pool // pool []byte buffers used for WriteStream
   zeros []byte    // shared, zero-valued buffer used for WriteStream
@@ -107,6 +109,7 @@ func FromParameters(parameters map[string]interface{}) *Driver {
 	var rootDirectory = defaultRootDirectory
   HdfsURL := defaultHdfsURL
   portInt := defaultPort
+  UserName := defaultUserName
 	if parameters != nil {
 		rootDir, ok := parameters["rootdirectory"]
 		if ok {
@@ -120,12 +123,17 @@ func FromParameters(parameters map[string]interface{}) *Driver {
     if ok{
       portInt = fmt.Sprint(portIntTemp)
     }
+    UserNameTemp, ok := parameters["username"]
+    if ok {
+      UserName = fmt.Sprint(UserNameTemp)
+    }
 	}
 
   params := DriverParameters{
 		HdfsURL,
 		portInt,
 	  rootDirectory,
+    UserName,
 	}
 
 	return New(params)
@@ -142,6 +150,7 @@ func New(params DriverParameters) *Driver {
 		HdfsURL:        params.HdfsURL,
 		Port:           params.Port,
 		RootDirectory:  params.RootDirectory,
+    UserName:       params.UserName,
     Client:         *client,
     zeros:         make([]byte, defaultChunkSize),
 	}
@@ -187,36 +196,12 @@ func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
 
 // PutContent stores the []byte content at a location designated by "path".
 func (d *driver) PutContent(ctx context.Context, path string, contents []byte) error {
-  requestOptions := map[string]string{
-    "method": "CREATE",
-    //TODO add buffersize for now using default buffersize.
-  }
-  requestURI, err := getHdfsURI(path, requestOptions, d)
-  if err != nil {
-    return err
-  }
-  req, err := http.NewRequest("PUT", requestURI, nil)
-  if err != nil {
-    return err
-  }
-  resp, err := d.Client.Do(req)
-  defer resp.Body.Close()
-  if err != nil {
-    return err
-  }
-  requestURI = resp.Header["Location"][0]
-  //TODO deal with file permissions.
-  resp.Body.Close()
-  req, err = http.NewRequest("PUT", requestURI, bytes.NewBuffer(contents))
-  if err != nil{
-    return err
-  }
-  resp1, err := d.Client.Do(req)
+  resp, err := d.CreateFile(path, contents, uint64(len(contents)))
 
   if err != nil{
     return err
   }
-  defer resp1.Body.Close()
+  defer resp.Body.Close()
   return nil
 }
 
@@ -234,16 +219,7 @@ func (d *driver) ReadStream(ctx context.Context, path string, offset int64) (io.
   if offset >= fi.Size() {
 		return ioutil.NopCloser(bytes.NewReader(nil)), nil
 	}
-  requestOptions := map[string]string{
-    "method": "OPEN",
-    "offset": strconv.FormatInt(offset, 10),
-    //TODO add buffersize for now using default buffersize.
-  }
-  requestURI, err := getHdfsURI(path, requestOptions, d)
-  if err != nil {
-    return nil, err
-  }
-  resp, err := http.Get(requestURI)
+  resp, err := d.OpenFile(path, offset)
   if err != nil {
     return nil, err
   }
@@ -271,9 +247,7 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
 
     if offset < fi.Size() {
       //In this case we must truncate the file back to the offset and then append
-      //from that point on. The truncate rest api for webhdfs allows you to specify
-      //the length of the new file therefore we want to truncate with
-      //newLength = offset
+      //from that point on.
       firstPass = false
       resp, err := d.TruncateFile(subPath, offset)
       if err != nil {
@@ -487,62 +461,14 @@ func (d *driver) URLFor(ctx context.Context, path string, options map[string]int
 
 }
 
-func getHdfsURI(path string, options map[string]string, d *driver)(string, error){
-  baseURI := "http://" + d.HdfsURL + ":" + d.Port + "/webhdfs/v1" + path
-  fullURI := baseURI
-  method, ok := options["method"]
-  if ok {
-    switch method {
-    case "GETFILESTATUS":
-        fullURI = baseURI + "?op=GETFILESTATUS&user.name=jakecharland"
-      case "DELETE":
-        fullURI = baseURI + "?op=DELETE&recursive=true&user.name=jakecharland"
-      case "RENAME":
-        destPath, ok := options["destPath"]
-        if ok {
-          fullURI = baseURI + "?op=RENAME&destination=" + fmt.Sprint(destPath) + "&user.name=jakecharland"
-        } else {
-          return "", nil
-        }
-      case "OPEN":
-        offset, ok := options["offset"]
-        if ok{
-          fullURI = baseURI + "?op=OPEN&offset=" + offset + "&user.name=jakecharland"
-        } else {
-          return "", nil
-        }
-      case "CREATE":
-        fullURI = baseURI + "?op=CREATE&overwrite=true&user.name=jakecharland"
-      case "LISTSTATUS":
-        fullURI = baseURI + "?op=LISTSTATUS&user.name=jakecharland"
-      case "APPEND":
-        fullURI = baseURI + "?op=APPEND&buffersize=" + strconv.FormatInt(defaultChunkSize, 10) + "&user.name=jakecharland"
-      case "MKDIRS":
-        fullURI = baseURI + "?op=MKDIRS&user.name=jakecharland"
-      case "TRUNCATE":
-        newLength, ok := options["newLength"]
-        if ok{
-          fullURI = baseURI + "?op=TRUNCATE&newlength=" + newLength + "&user.name=jakecharland"
-        } else {
-          return "", nil
-        }
-      default:
-        return "", storagedriver.ErrUnsupportedMethod{}
-    }
-  }
-  return fullURI, nil
+func (d *driver) GetBaseURL(path string) string{
+  return "http://" + d.HdfsURL + ":" + d.Port + "/webhdfs/v1" + path
 }
 
 
 func (d *driver) AppendToFile(subPath string, buf []byte, sizeRead uint64)(*http.Response, error) {
-  requestOptions := map[string]string{
-    "method": "APPEND",
-  }
-
-  requestURI, err := getHdfsURI(subPath, requestOptions, d)
-  if err != nil {
-    return nil, err
-  }
+  baseURL := d.GetBaseURL(subPath)
+  requestURI := baseURL + "?op=APPEND&buffersize=" + strconv.FormatInt(defaultChunkSize, 10) + "&user.name=" + d.UserName
   req, err := http.NewRequest("POST", requestURI, nil)
   if err != nil {
     return nil, err
@@ -563,14 +489,8 @@ func (d *driver) AppendToFile(subPath string, buf []byte, sizeRead uint64)(*http
 }
 
 func (d *driver) CreateFile(subPath string, buf []byte, sizeRead uint64)(*http.Response, error) {
-  requestOptions := map[string]string{
-    "method": "CREATE",
-  }
-
-  requestURI, err := getHdfsURI(subPath, requestOptions, d)
-  if err != nil {
-    return nil, err
-  }
+  baseURL := d.GetBaseURL(subPath)
+  requestURI := baseURL + "?op=CREATE&overwrite=true&user.name=" + d.UserName
   req, err := http.NewRequest("PUT", requestURI, nil)
   if err != nil {
     return nil, err
@@ -590,15 +510,15 @@ func (d *driver) CreateFile(subPath string, buf []byte, sizeRead uint64)(*http.R
   return d.Client.Do(req)
 }
 
+func (d *driver) OpenFile(path string, offset int64)(*http.Response, error){
+  baseURL := d.GetBaseURL(path)
+  requestURI := baseURL + "?op=OPEN&offset=" + strconv.FormatInt(offset, 10) + "&user.name=" + d.UserName
+  return http.Get(requestURI)
+}
+
 func (d * driver) TruncateFile(subPath string, offset int64) (*http.Response, error){
-  requestOptions := map[string]string{
-    "method": "TRUNCATE",
-    "newLength": strconv.FormatInt(offset, 10),
-  }
-  requestURI, err := getHdfsURI(subPath, requestOptions, d)
-  if err != nil {
-    return nil, err
-  }
+  baseURL := d.GetBaseURL(subPath)
+  requestURI := baseURL + "?op=TRUNCATE&newlength=" + strconv.FormatInt(offset, 10) + "&user.name=" + d.UserName
   resp, err := http.Post(requestURI, "application/octet-stream", nil)
   if err != nil {
     return nil, err
@@ -612,36 +532,20 @@ func (d * driver) TruncateFile(subPath string, offset int64) (*http.Response, er
 }
 
 func (d *driver) GetFileInfo(subPath string) (*http.Response, error){
-  requestOptions := map[string]string{
-    "method": "GETFILESTATUS",
-  }
-  requestURI, err := getHdfsURI(subPath, requestOptions, d)
-  if err != nil {
-    return nil, err
-  }
+  baseURL := d.GetBaseURL(subPath)
+  requestURI := baseURL + "?op=GETFILESTATUS&user.name=" + d.UserName
   return http.Get(requestURI)
 }
 
 func (d *driver) GetDirInfo(subPath string) (*http.Response, error){
-  requestOptions := map[string]string{
-    "method": "LISTSTATUS",
-  }
-  requestURI, err := getHdfsURI(subPath, requestOptions, d)
-  if err != nil {
-    return nil, err
-  }
+  baseURL := d.GetBaseURL(subPath)
+  requestURI := baseURL + "?op=LISTSTATUS&user.name=" + d.UserName
   return http.Get(requestURI)
 }
 
 func (d *driver) MkDirs(destDir string)(*http.Response, error){
-  requestOptions := map[string]string{
-    "method": "MKDIRS",
-  }
-  requestURI, err := getHdfsURI(destDir, requestOptions, d)
-  if err != nil {
-    return nil, err
-  }
-
+  baseURL := d.GetBaseURL(destDir)
+  requestURI := baseURL + "?op=MKDIRS&user.name=" + d.UserName
   req, err := http.NewRequest("PUT", requestURI, nil)
   if err != nil {
     return nil, err
@@ -650,15 +554,8 @@ func (d *driver) MkDirs(destDir string)(*http.Response, error){
 }
 
 func (d *driver) Rename(sourcePath string, destPath string)(*http.Response, error){
-  requestOptions := map[string]string{
-    "method": "RENAME",
-    "destPath": destPath,
-  }
-  requestURI, err := getHdfsURI(sourcePath, requestOptions, d)
-  if err != nil {
-    return nil, err
-  }
-
+  baseURL := d.GetBaseURL(sourcePath)
+  requestURI := baseURL + "?op=RENAME&destination=" + fmt.Sprint(destPath) + "&user.name=" + d.UserName
   req, err := http.NewRequest("PUT", requestURI, nil)
   if err != nil {
     return nil, err
@@ -667,13 +564,8 @@ func (d *driver) Rename(sourcePath string, destPath string)(*http.Response, erro
 }
 
 func (d *driver) DeleteFile(path string)(*http.Response, error){
-  requestOptions := map[string]string{
-    "method": "DELETE",
-  }
-  requestURI, err := getHdfsURI(path, requestOptions, d)
-  if err != nil {
-    return nil, err
-  }
+  baseURL := d.GetBaseURL(path)
+  requestURI := baseURL + "?op=DELETE&recursive=true&user.name=" + d.UserName
   req, err := http.NewRequest("DELETE", requestURI, nil)
   if err != nil {
     return nil, err
@@ -681,17 +573,6 @@ func (d *driver) DeleteFile(path string)(*http.Response, error){
   return d.Client.Do(req)
 }
 
-// CheckRedirect specifies the policy for handling redirects.
-// If CheckRedirect is not nil, the client calls it before
-// following an HTTP redirect. The arguments req and via are
-// the upcoming request and the requests made already, oldest
-// first. If CheckRedirect returns an error, the Client's Get
-// method returns both the previous Response and
-// CheckRedirect's error (wrapped in a url.Error) instead of
-// issuing the Request req.
-//
-// If CheckRedirect is nil, the Client uses its default policy,
-// which is to stop after 10 consecutive requests.
 func redirectPolicyFunc(req *http.Request, via []*http.Request) error {
   return errors.New("cancel")
 }
