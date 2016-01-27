@@ -22,11 +22,11 @@ import (
 const driverName = "hdfs"
 const defaultRootDirectory = "/"
 //HDFS has two name nodes and if one fails we need to use the other one.
-//StandbyException
+
 const defaultHdfsURL1 = "127.0.0.1"
 const defaultHdfsURL2 = "127.0.0.1"
 const defaultPort = "50070"
-const defaultUserName = "hdfs"
+const defaultUserName = "docker"
 
 //Set defaultChunkSize to 125mb which is the default block size for hdfs
 const defaultChunkSize = 1.25e+8
