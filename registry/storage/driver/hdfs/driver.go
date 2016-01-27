@@ -118,6 +118,7 @@ func FromParameters(parameters map[string]interface{}) *Driver {
 		rootDir, ok := parameters["rootdirectory"]
 		if ok {
 			rootDirectory = fmt.Sprint(rootDir)
+      fmt.Println(rootDirectory)
 		}
     HdfsURLTemp, ok := parameters["hdfsurl"]
     if ok{
@@ -145,8 +146,6 @@ func FromParameters(parameters map[string]interface{}) *Driver {
 
 // New constructs a new Driver with a given rootDirectory
 func New(params DriverParameters) *Driver {
-
-  //TODO create the root directory inside of the hdfs if it doesnt already exist.
   client := &http.Client{
 	   CheckRedirect: redirectPolicyFunc,
   }
@@ -466,7 +465,8 @@ func (d *driver) URLFor(ctx context.Context, path string, options map[string]int
 }
 
 func (d *driver) GetBaseURL(path string) string{
-  return "http://" + d.HdfsURL + ":" + d.Port + "/webhdfs/v1" + path
+  rootDir := d.GetRootDir()
+  return "http://" + d.HdfsURL + ":" + d.Port + "/webhdfs/v1" + rootDir + path
 }
 
 
@@ -569,7 +569,8 @@ func (d *driver) MkDirs(destDir string)(*http.Response, error){
 
 func (d *driver) Rename(sourcePath string, destPath string)(*http.Response, error){
   baseURL := d.GetBaseURL(sourcePath)
-  requestURI := baseURL + "?op=RENAME&destination=" + fmt.Sprint(destPath) + "&user.name=" + d.UserName
+  rootDir := d.GetRootDir()
+  requestURI := baseURL + "?op=RENAME&destination=" + rootDir + fmt.Sprint(destPath) + "&user.name=" + d.UserName
   req, err := http.NewRequest("PUT", requestURI, nil)
   if err != nil {
     return nil, err
@@ -598,6 +599,14 @@ func (d *driver) getbuf() []byte {
 func (d *driver) putbuf(p []byte) {
 	copy(p, d.zeros)
 	d.pool.Put(p)
+}
+
+func (d *driver) GetRootDir() string{
+  rootDir := ""
+  if d.RootDirectory != "/"{
+    rootDir = d.RootDirectory
+  }
+  return rootDir
 }
 
 func getJSON(r *http.Response, target interface{}) error {

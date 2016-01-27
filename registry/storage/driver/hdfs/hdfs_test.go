@@ -23,6 +23,7 @@ func init() {
   //hdfsURL := "10.0.1.18"
   port := "50070"
   username := "jakecharland"
+  NewRootDirectory := "/dockerRegistry"
   root, err := ioutil.TempDir("", "driver-")
   if err != nil {
 		panic(err)
@@ -32,7 +33,7 @@ func init() {
     parameters := DriverParameters{
       hdfsURL,
       port,
-      rootDirectory,
+      NewRootDirectory,
       username,
     }
     return New(parameters), nil
