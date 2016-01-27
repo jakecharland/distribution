@@ -21,7 +21,10 @@ import (
 
 const driverName = "hdfs"
 const defaultRootDirectory = "/"
-const defaultHdfsURL = "127.0.0.1"
+//HDFS has two name nodes and if one fails we need to use the other one.
+//StandbyException
+const defaultHdfsURL1 = "127.0.0.1"
+const defaultHdfsURL2 = "127.0.0.1"
 const defaultPort = "50070"
 const defaultUserName = "hdfs"
 
@@ -31,10 +34,11 @@ const defaultChunkSize = 1.25e+8
 //DriverParameters contains the url and port for the namenode of your
 //HDFS cluster the RootDirectory is where all data will be relative to.
 type DriverParameters struct {
-	HdfsURL       string
+	HdfsURL1      string
+  HdfsURL2      string
 	Port          string
   RootDirectory string
-  UserName     string
+  UserName      string
   //TODO add user for now I will just use user hdfs
 }
 
@@ -74,6 +78,9 @@ type FileStatusJSON struct{
     Permission string  `json:"permission"`
     FileType   string  `json:"type"`
   }
+  RemoteException struct{
+    Exception string  `json:"exception"`
+  }
 }
 
 func init() {
@@ -87,11 +94,13 @@ func (factory *hdfsDriverFactory) Create(parameters map[string]interface{}) (sto
 }
 
 type driver struct {
-	HdfsURL       string
+	HdfsURL1      string
+  HdfsURL2      string
 	Port          string
 	RootDirectory string
   UserName      string
 
+  NN1Active     bool
   pool  sync.Pool // pool []byte buffers used for WriteStream
   zeros []byte    // shared, zero-valued buffer used for WriteStream
   Client http.Client //http client for sending http requests to the hdfs
@@ -111,7 +120,8 @@ type Driver struct {
 //registry startup.
 func FromParameters(parameters map[string]interface{}) *Driver {
 	var rootDirectory = defaultRootDirectory
-  HdfsURL := defaultHdfsURL
+  HdfsURL1 := defaultHdfsURL1
+  HdfsURL2 := defaultHdfsURL2
   portInt := defaultPort
   UserName := defaultUserName
 	if parameters != nil {
@@ -120,9 +130,13 @@ func FromParameters(parameters map[string]interface{}) *Driver {
 			rootDirectory = fmt.Sprint(rootDir)
       fmt.Println(rootDirectory)
 		}
-    HdfsURLTemp, ok := parameters["hdfsurl"]
+    HdfsURL1Temp, ok := parameters["namenode1"]
     if ok{
-      HdfsURL = fmt.Sprint(HdfsURLTemp)
+      HdfsURL1 = fmt.Sprint(HdfsURL1Temp)
+    }
+    HdfsURL2Temp, ok := parameters["namenode2"]
+    if ok{
+      HdfsURL2 = fmt.Sprint(HdfsURL2Temp)
     }
     portIntTemp, ok := parameters["port"]
     if ok{
@@ -135,7 +149,8 @@ func FromParameters(parameters map[string]interface{}) *Driver {
 	}
 
   params := DriverParameters{
-		HdfsURL,
+		HdfsURL1,
+    HdfsURL2,
 		portInt,
 	  rootDirectory,
     UserName,
@@ -151,12 +166,14 @@ func New(params DriverParameters) *Driver {
 	   CheckRedirect: redirectPolicyFunc,
   }
   d := &driver{
-		HdfsURL:        params.HdfsURL,
+		HdfsURL1:       params.HdfsURL1,
+    HdfsURL2:       params.HdfsURL2,
 		Port:           params.Port,
 		RootDirectory:  params.RootDirectory,
     UserName:       params.UserName,
     Client:         *client,
     zeros:         make([]byte, defaultChunkSize),
+    NN1Active:      true,
 	}
 
   d.pool.New = func() interface{} {
@@ -200,6 +217,10 @@ func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
 
 // PutContent stores the []byte content at a location designated by "path".
 func (d *driver) PutContent(ctx context.Context, path string, contents []byte) error {
+  //Need to call stat to make sure the namenode we are talking to is still alive
+  //This is the only function that didn't already need to call stat so I Have
+  //baked the namenode active : standby check into the stat function.
+  _, _ = d.Stat(ctx, path)
   resp, err := d.CreateFile(path, contents, uint64(len(contents)))
 
   if err != nil{
@@ -348,6 +369,19 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
   if err != nil{
     return nil, err
   }
+  if FileStatusJSON.RemoteException.Exception == "StandbyException" {
+    //Switch namenodes this is the standby one
+    d.NN1Active = false
+    resp, err = d.GetFileInfo(subPath)
+    if err != nil{
+      return nil, err
+    }
+    defer resp.Body.Close()
+    err = getJSON(resp, &FileStatusJSON)
+    if err != nil{
+      return nil, err
+    }
+  }
 
   if FileStatusJSON.FileStatus.FileType == ""{
     return nil, storagedriver.PathNotFoundError{Path: subPath}
@@ -467,7 +501,11 @@ func (d *driver) URLFor(ctx context.Context, path string, options map[string]int
 
 func (d *driver) GetBaseURL(path string) string{
   rootDir := d.GetRootDir()
-  return "http://" + d.HdfsURL + ":" + d.Port + "/webhdfs/v1" + rootDir + path
+  hdfsURL := d.HdfsURL1
+  if !d.NN1Active {
+    hdfsURL = d.HdfsURL2
+  }
+  return "http://" + hdfsURL + ":" + d.Port + "/webhdfs/v1" + rootDir + path
 }
 
 

@@ -19,11 +19,12 @@ var skipHdfs func() string
 var hdfsDriverConstructor func(rootDirectory string) (storagedriver.StorageDriver, error)
 
 func init() {
-  hdfsURL := "lmthdfs01.ve.selfhost.corp.microsoft.com"
-  //hdfsURL := "10.0.1.18"
+  hdfsURL1 := "lmthdfs02.ve.selfhost.corp.microsoft.com"
+  hdfsURL2 := "lmthdfs01.ve.selfhost.corp.microsoft.com"
+
   port := "50070"
   username := "docker"
-  NewRootDirectory := "/dockerRegistry"
+  NewRootDirectory := "/dockerRegistryTest"
   root, err := ioutil.TempDir("", "driver-")
   if err != nil {
 		panic(err)
@@ -31,7 +32,8 @@ func init() {
 	defer os.Remove(root)
   hdfsDriverConstructor = func(rootDirectory string) (storagedriver.StorageDriver, error) {
     parameters := DriverParameters{
-      hdfsURL,
+      hdfsURL1,
+      hdfsURL2,
       port,
       NewRootDirectory,
       username,
