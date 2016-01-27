@@ -38,6 +38,10 @@ type DriverParameters struct {
   //TODO add user for now I will just use user hdfs
 }
 
+type BooleanResponseJSON struct{
+  Success bool `json:"boolean"`
+}
+
 //FileStatusJSON contains the structure of the response from HDFS status of a
 //file or directory
 type FileStatusesJSON struct{
@@ -519,16 +523,26 @@ func (d *driver) OpenFile(path string, offset int64)(*http.Response, error){
 func (d * driver) TruncateFile(subPath string, offset int64) (*http.Response, error){
   baseURL := d.GetBaseURL(subPath)
   requestURI := baseURL + "?op=TRUNCATE&newlength=" + strconv.FormatInt(offset, 10) + "&user.name=" + d.UserName
-  resp, err := http.Post(requestURI, "application/octet-stream", nil)
-  if err != nil {
-    return nil, err
+  //Have to call truncate in a loop because webHDFS refuses to work the first
+  //time you call it usually works the second time if you wait sleep
+  //for a couple seconds.....WTF???????
+  for i := 0; i < 5; i++ {
+    resp, err := http.Post(requestURI, "application/octet-stream", nil)
+    if err != nil {
+      return nil, err
+    }
+    BooleanResponseJSON := BooleanResponseJSON{}
+    err = getJSON(resp, &BooleanResponseJSON)
+    if err != nil {
+      return nil, err
+    }
+    if BooleanResponseJSON.Success {
+      return resp, err
+    }
+    resp.Body.Close()
+    time.Sleep(1000*1000*1000*2)
   }
-  resp.Body.Close()
-  //Have to call truncate twice because webHDFS refuses to work the first
-  //time you call it but works fine the second time if you wait for
-  //two, not one but two seconds.....WTF???????
-  time.Sleep(1000*1000*1000*4)
-  return http.Post(requestURI, "application/json", nil)
+  return nil, fmt.Errorf("Truncate unsuccessful")
 }
 
 func (d *driver) GetFileInfo(subPath string) (*http.Response, error){
