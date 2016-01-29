@@ -19,8 +19,8 @@ var skipHdfs func() string
 var hdfsDriverConstructor func(rootDirectory string) (storagedriver.StorageDriver, error)
 
 func init() {
-  hdfsURL1 := "lmthdfs02.ve.selfhost.corp.microsoft.com"
-  hdfsURL2 := "lmthdfs01.ve.selfhost.corp.microsoft.com"
+  hdfsURL1 := "127.0.0.1"
+  hdfsURL2 := "127.0.0.1"
 
   port := "50070"
   username := "docker"
