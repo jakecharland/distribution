@@ -17,6 +17,8 @@ import (
 	storagedriver "github.com/docker/distribution/registry/storage/driver"
 	"github.com/docker/distribution/registry/storage/driver/base"
 	"github.com/docker/distribution/registry/storage/driver/factory"
+
+	hdfsNative "github.com/colinmarc/hdfs"
 )
 
 const driverName = "hdfs"
@@ -104,7 +106,7 @@ type driver struct {
 	NN1Active bool
 	pool      sync.Pool   // pool []byte buffers used for WriteStream
 	zeros     []byte      // shared, zero-valued buffer used for WriteStream
-	Client    http.Client //http client for sending http requests to the hdfs
+	Client    hdfsNative.Client //http client for sending http requests to the hdfs
 }
 
 type baseEmbed struct {
@@ -162,9 +164,9 @@ func FromParameters(parameters map[string]interface{}) *Driver {
 
 // New constructs a new Driver with a given rootDirectory
 func New(params DriverParameters) *Driver {
-	fmt.Println(params.UserName)
-	client := &http.Client{
-		CheckRedirect: redirectPolicyFunc,
+	client, err := hdfsNative.NewForUser(params.HdfsURL1, params.UserName)
+	if err != nil {
+		return nil
 	}
 	d := &driver{
 		HdfsURL1:      params.HdfsURL1,
@@ -222,12 +224,12 @@ func (d *driver) PutContent(ctx context.Context, path string, contents []byte) e
 	//This is the only function that didn't already need to call stat so I Have
 	//baked the namenode active : standby check into the stat function.
 	_, _ = d.Stat(ctx, path)
-	resp, err := d.CreateFile(path, contents, uint64(len(contents)))
+	fw, err := d.CreateFile(path, contents, uint64(len(contents)))
 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer fw.Close()
 	return nil
 }
 
@@ -331,11 +333,11 @@ func (d *driver) WriteStream(ctx context.Context, subPath string, offset int64, 
 		if firstPass {
 			//Create the file since this is the first pass it does not exist yet.
 			firstPass = false
-			resp, err := d.CreateFile(subPath, buf, uint64(sizeRead))
+			fw, err := d.CreateFile(subPath, buf, uint64(sizeRead))
 			if err != nil {
 				return totalRead, err
 			}
-			resp.Body.Close()
+			fw.Close()
 		} else {
 			//Append to file as we recieve bytes from the buffer
 			resp, err := d.AppendToFile(subPath, buf, uint64(sizeRead))
@@ -372,7 +374,7 @@ func (d *driver) Stat(ctx context.Context, subPath string) (storagedriver.FileIn
 	}
 	if FileStatusJSON.RemoteException.Exception == "StandbyException" {
 		//Switch namenodes this is the standby one
-		d.NN1Active = false
+		d.NN1Active = !d.NN1Active
 		resp, err = d.GetFileInfo(subPath)
 		if err != nil {
 			return nil, err
@@ -531,32 +533,27 @@ func (d *driver) AppendToFile(subPath string, buf []byte, sizeRead uint64) (*htt
 	return d.Client.Do(req)
 }
 
-func (d *driver) CreateFile(subPath string, buf []byte, sizeRead uint64) (*http.Response, error) {
-	baseURL := d.GetBaseURL(subPath)
-	requestURI := baseURL + "?op=CREATE&overwrite=true&user.name=" + d.UserName
-	req, err := http.NewRequest("PUT", requestURI, nil)
+func (d *driver) CreateFile(subPath string, buf []byte, sizeRead uint64) (*hdfsClient.FileWriter, error) {
+	fw, err := d.Client.Create(d.GetRootDir() + subPath)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := d.Client.Do(req)
-	defer resp.Body.Close()
+	nn, err := fw.Write(buf)
 	if err != nil {
 		return nil, err
 	}
-
-	requestURI = resp.Header["Location"][0]
-
-	req, err = http.NewRequest("PUT", requestURI, bytes.NewBuffer(buf[:sizeRead]))
-	if err != nil {
-		return nil, err
-	}
-	return d.Client.Do(req)
+	return fw, nil
 }
 
-func (d *driver) OpenFile(path string, offset int64) (*http.Response, error) {
-	baseURL := d.GetBaseURL(path)
-	requestURI := baseURL + "?op=OPEN&offset=" + strconv.FormatInt(offset, 10) + "&user.name=" + d.UserName
-	return http.Get(requestURI)
+func (d *driver) OpenFile(path string, offset int64) (*hdfsClient.FileReader, error) {
+	// baseURL := d.GetBaseURL(path)
+	// requestURI := baseURL + "?op=OPEN&offset=" + strconv.FormatInt(offset, 10) + "&user.name=" + d.UserName
+	// return http.Get(requestURI)
+	fr, err := d.Client.Open(d.GetRootDir() + path)
+	if err != nil {
+		return nil, err
+	}
+
 }
 
 func (d *driver) TruncateFile(subPath string, offset int64) (*http.Response, error) {
